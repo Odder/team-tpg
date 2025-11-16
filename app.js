@@ -13,6 +13,8 @@ const state = {
     reflectionLayers: null,
     measurementMarker: null,
     measurementLine: null,
+    sourceToClickLine: null,
+    midpointMarker: null,
     reflections: [],
     target: null,
     isLoading: true,
@@ -274,10 +276,32 @@ function drawReflections(reflections) {
         // Check if this is the active reflection
         const isActive = index === state.activeReflectionIndex;
 
+        // Check if source is too far from target
+        const sourcePoint = SOURCE_POINTS[reflection.sourceIndex];
+        let isTooFar = false;
+        if (state.target) {
+            const distance = GeoCalc.getDistance(sourcePoint, state.target);
+            isTooFar = distance > GeoCalc.MAX_DISTANCE_KM;
+        }
+
         // Determine styling
-        const color = isActive ? '#ff6b35' : '#2ecc71';
-        const fillOpacity = isActive ? 0.5 : 0.15;
-        const weight = isActive ? 5 : 2;
+        let color, fillOpacity, weight;
+        if (isTooFar) {
+            // Grey out reflections from sources that are too far
+            color = '#555555';
+            fillOpacity = 0.08;
+            weight = 1;
+        } else if (isActive) {
+            // Highlight active reflection
+            color = '#ff6b35';
+            fillOpacity = 0.5;
+            weight = 5;
+        } else {
+            // Normal reflection
+            color = '#2ecc71';
+            fillOpacity = 0.15;
+            weight = 2;
+        }
 
         const circle = L.circle([reflection.lat, reflection.lng], {
             radius: reflection.radius,
@@ -287,7 +311,7 @@ function drawReflections(reflections) {
             weight: weight
         });
 
-        const sourcePoint = SOURCE_POINTS[reflection.sourceIndex];
+        // Use sourcePoint already declared above
         const sourceLabel = sourcePoint.title
             ? `${sourcePoint.title} (${reflection.sourceIndex + 1})`
             : `Source ${reflection.sourceIndex + 1}`;
@@ -296,7 +320,7 @@ function drawReflections(reflections) {
             ? `Reflection ${index + 1} - ${sourcePoint.title}`
             : `Reflection Point ${index + 1}`;
 
-        circle.bindPopup(`
+        let popupContent = `
             <strong>${header}</strong><br>
             Lat: ${reflection.lat.toFixed(4)}<br>
             Lng: ${reflection.lng.toFixed(4)}<br>
@@ -304,7 +328,13 @@ function drawReflections(reflections) {
             <br>
             <em>Reflected from ${sourceLabel}</em><br>
             Distance: ${GeoCalc.formatDistance(reflection.distance * 2)}
-        `);
+        `;
+
+        if (isTooFar) {
+            popupContent += `<br><em style="color: #999;">Source too far from target</em>`;
+        }
+
+        circle.bindPopup(popupContent);
 
         circle.addTo(state.reflectionLayers);
     });
@@ -361,15 +391,24 @@ function handleMapClick(e) {
     drawSourcePoints();
     drawReflections(state.reflections);
 
-    // Remove previous measurement marker and line if exists
+    // Remove previous measurement markers and lines if exist
     if (state.measurementMarker) {
         state.map.removeLayer(state.measurementMarker);
     }
     if (state.measurementLine) {
         state.map.removeLayer(state.measurementLine);
     }
+    if (state.sourceToClickLine) {
+        state.map.removeLayer(state.sourceToClickLine);
+    }
+    if (state.midpointMarker) {
+        state.map.removeLayer(state.midpointMarker);
+    }
 
-    // Create new measurement marker
+    // Get source point
+    const sourcePoint = SOURCE_POINTS[nearest.reflection.sourceIndex];
+
+    // Create new measurement marker at click point
     state.measurementMarker = L.circleMarker([clickPoint.lat, clickPoint.lng], {
         radius: 6,
         color: '#f39c12',
@@ -390,8 +429,51 @@ function handleMapClick(e) {
         dashArray: '10, 10'
     }).addTo(state.map);
 
+    // Create geodesic line from click to source (curved for globe)
+    const clickTurf = turf.point([clickPoint.lng, clickPoint.lat]);
+    const sourceTurf = turf.point([sourcePoint.lng, sourcePoint.lat]);
+    const greatCircle = turf.greatCircle(clickTurf, sourceTurf);
+
+    state.sourceToClickLine = L.geoJSON(greatCircle, {
+        style: {
+            color: '#9b59b6',
+            weight: 2,
+            opacity: 0.7,
+            dashArray: '10, 10'
+        }
+    }).addTo(state.map);
+
+    // Calculate midpoint between click and source
+    const midpointTurf = turf.midpoint(clickTurf, sourceTurf);
+    const midpoint = {
+        lat: midpointTurf.geometry.coordinates[1],
+        lng: midpointTurf.geometry.coordinates[0]
+    };
+
+    // Calculate distance from midpoint to target
+    const midpointToTargetDistance = state.target ? GeoCalc.getDistance(midpoint, state.target) : 0;
+
+    // Create midpoint marker
+    state.midpointMarker = L.circleMarker([midpoint.lat, midpoint.lng], {
+        radius: 8,
+        color: '#9b59b6',
+        fillColor: '#9b59b6',
+        fillOpacity: 0.9,
+        weight: 3
+    });
+
+    state.midpointMarker.bindPopup(`
+        <strong>Midpoint (Click ↔ Source)</strong><br>
+        Lat: ${midpoint.lat.toFixed(6)}<br>
+        Lng: ${midpoint.lng.toFixed(6)}<br>
+        <br>
+        <strong style="color: #e74c3c;">Score Distance:</strong><br>
+        ${GeoCalc.formatDistance(midpointToTargetDistance)} from target
+    `);
+
+    state.midpointMarker.addTo(state.map);
+
     // Get source point info for labeling
-    const sourcePoint = SOURCE_POINTS[nearest.reflection.sourceIndex];
     const reflectionLabel = sourcePoint.title
         ? `${sourcePoint.title} (${nearest.index + 1})`
         : `Reflection ${nearest.index + 1}`;
@@ -415,9 +497,9 @@ function handleMapClick(e) {
     distanceInfo.classList.add('active');
 
     if (nearest.isInside) {
-        distanceInfo.textContent = `You are inside ${reflectionLabel}! Distance to center: ${GeoCalc.formatDistance(nearest.distanceToCenter)}`;
+        distanceInfo.textContent = `You are inside ${reflectionLabel}! Distance to center: ${GeoCalc.formatDistance(nearest.distanceToCenter)} | Score: ${GeoCalc.formatDistance(midpointToTargetDistance)}`;
     } else {
-        distanceInfo.textContent = `Nearest reflection: ${reflectionLabel} - Distance: ${GeoCalc.formatDistance(nearest.distanceToEdge)}`;
+        distanceInfo.textContent = `Nearest: ${reflectionLabel} - Distance: ${GeoCalc.formatDistance(nearest.distanceToEdge)} | Score: ${GeoCalc.formatDistance(midpointToTargetDistance)}`;
     }
 }
 

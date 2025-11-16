@@ -29,8 +29,9 @@ const GeoCalc = {
         // Calculate bearing from source to target
         const bearing = turf.bearing(sourcePoint, targetPoint);
 
-        // Calculate reflection point: go same distance from target in same direction
-        const reflectionPoint = turf.destination(targetPoint, distanceKm, bearing, { units: 'kilometers' });
+        // Calculate reflection point: go TWICE the distance from source along the same great circle
+        // This makes target the true geodesic midpoint between source and reflection
+        const reflectionPoint = turf.destination(sourcePoint, distanceKm * 2, bearing, { units: 'kilometers' });
 
         return {
             lat: reflectionPoint.geometry.coordinates[1],
