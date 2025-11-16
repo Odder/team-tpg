@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geo Reflection Calculator</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <a href="editor.html" class="nav-link" style="display: inline-block; margin-bottom: 16px; color: #3498db; text-decoration: none; font-size: 14px;">Edit cellery-list →</a>
+
+            <h1>Geo Reflection Calculator</h1>
+
+            <div class="input-group">
+                <label for="target-coords">Target Coordinates</label>
+                <input
+                    type="text"
+                    id="target-coords"
+                    placeholder="lat, lng (e.g., 40.7128, -74.0060)"
+                    autocomplete="off">
+                <button id="calculate-btn">Calculate Reflections</button>
+            </div>
+
+            <div class="info-panel">
+                <div class="info-item">
+                    <span class="color-indicator blue"></span>
+                    <span>Source Points</span>
+                </div>
+                <div class="info-item">
+                    <span class="color-indicator red"></span>
+                    <span>Target Point</span>
+                </div>
+                <div class="info-item">
+                    <span class="color-indicator green"></span>
+                    <span>Reflected Points</span>
+                </div>
+            </div>
+
+            <div id="distance-info" class="distance-info hidden">
+                Click on the map to measure distance to nearest reflection
+            </div>
+        </div>
+
+        <!-- Map Container -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <!-- Turf.js for geodesic calculations -->
+    <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+
+    <!-- Custom JS -->
+    <script src="geo-calc.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
