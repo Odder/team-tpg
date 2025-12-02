@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Combination Finder</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+
+    <!-- Leaflet MarkerCluster CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .combination-list {
+            max-height: calc(100vh - 300px);
+            overflow-y: auto;
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .combination-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            background: var(--primary-bg);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border-left: 4px solid transparent;
+        }
+
+        .combination-item:hover {
+            background: var(--secondary-bg);
+            transform: translateX(2px);
+        }
+
+        .combination-item.selected {
+            background: var(--secondary-bg);
+            border-left-color: var(--green);
+        }
+
+        .combination-rank {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            background: var(--blue);
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 30px;
+            font-weight: bold;
+            font-size: 14px;
+            margin-right: 12px;
+        }
+
+        .combination-item.selected .combination-rank {
+            background: var(--green);
+        }
+
+        .combination-score {
+            color: var(--green);
+            font-weight: bold;
+            font-size: 16px;
+            margin-bottom: 6px;
+        }
+
+        .combination-spots {
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .spot-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: bold;
+            margin-right: 4px;
+        }
+
+        .spot-a {
+            background: #3498db;
+            color: white;
+        }
+
+        .spot-b {
+            background: #9b59b6;
+            color: white;
+        }
+
+        .file-inputs {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .file-input-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .file-input-row label {
+            flex: 0 0 60px;
+            font-size: 12px;
+        }
+
+        .file-input-row input[type="text"] {
+            flex: 1;
+            font-size: 12px;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <a href="index.html" class="nav-link">← Back to Calculator</a>
+
+            <h1>Combination Finder</h1>
+
+            <!-- File Inputs -->
+            <div class="input-group">
+                <label>Data Files</label>
+                <div class="file-inputs">
+                    <div class="file-input-row">
+                        <label>List A:</label>
+                        <input type="text" id="file-a" value="cellery-list-2.csv">
+                    </div>
+                    <div class="file-input-row">
+                        <label>List B:</label>
+                        <input type="text" id="file-b" value="geospot-list.csv">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Target Input -->
+            <div class="input-group">
+                <label for="target-coords">Target Coordinates</label>
+                <input
+                    type="text"
+                    id="target-coords"
+                    placeholder="lat, lng (e.g., 40.7128, -74.0060)"
+                    autocomplete="off">
+                <button id="find-btn">Find Best Combinations</button>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats">
+                <div><strong>List A:</strong> <span id="count-a">0</span> points</div>
+                <div><strong>List B:</strong> <span id="count-b">0</span> points</div>
+                <div><strong>Combinations:</strong> <span id="count-combos">0</span></div>
+            </div>
+
+            <!-- Combination List -->
+            <div class="input-group">
+                <label>Best Combinations</label>
+                <div class="combination-list" id="combination-list">
+                    <p style="color: var(--text-secondary); font-size: 13px;">
+                        Enter target and click "Find Best Combinations"
+                    </p>
+                </div>
+            </div>
+
+            <!-- Coverage Visualization -->
+            <div class="input-group">
+                <button id="show-all-midpoints-btn" style="background: var(--accent); color: var(--text-primary);">
+                    Show Clustered Midpoints
+                </button>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
+                    Displays all midpoint combinations with clustering for performance
+                </small>
+            </div>
+
+            <!-- Raw Midpoints -->
+            <div class="input-group">
+                <button id="show-raw-midpoints-btn" style="background: var(--accent); color: var(--text-primary);">
+                    Show ALL Raw Midpoints
+                </button>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
+                    ⚠️ Warning: Shows all individual points without clustering (may be slow!)
+                </small>
+            </div>
+
+            <!-- Heatmap Visualization -->
+            <div class="input-group">
+                <button id="show-heatmap-btn" style="background: var(--accent); color: var(--text-primary);">
+                    Generate Coverage Heatmap
+                </button>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
+                    50×50km tile heatmap: Green=inside, Yellow<100km, Orange<250km, Red<500km, Grey>500km
+                </small>
+            </div>
+        </div>
+
+        <!-- Map Container -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <!-- Leaflet MarkerCluster JS -->
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+    <!-- Turf.js for geodesic calculations -->
+    <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+
+    <!-- Custom JS -->
+    <script src="geo-calc.js"></script>
+    <script src="finder.js"></script>
+</body>
+</html>

@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoInvestigator Pro: Resection Solver</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet CSS & JS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        .leaflet-container { width: 100%; height: 100%; background: #111827; }
+        .crosshair-cursor { cursor: crosshair !important; }
+
+        /* Range Slider */
+        .range-slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            background: #374151;
+            border-radius: 2px;
+            outline: none;
+        }
+        .range-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            border: 2px solid #1f2937;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 h-screen overflow-hidden font-sans">
+<div id="root" class="h-full w-full"></div>
+
+<script type="text/babel">
+    const { useState, useRef, useEffect, useMemo, useCallback } = React;
+
+    // --- Icons ---
+    const IconUpload = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>;
+    const IconTarget = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>;
+    const IconPlus = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
+    const IconMinus = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
+    const IconMaximize = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>;
+    const IconX = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>;
+    const IconTrash = ({ className }) => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>;
+
+    // --- Math Helpers ---
+    const toRad = (deg) => (deg * Math.PI) / 180;
+
+    const getAngleBetweenPixels = (x1, x2, fov) => {
+        const halfFovRad = toRad(fov / 2);
+        const ndc1 = (x1 * 2) - 1;
+        const ndc2 = (x2 * 2) - 1;
+        const angle1 = Math.atan(ndc1 * Math.tan(halfFovRad));
+        const angle2 = Math.atan(ndc2 * Math.tan(halfFovRad));
+        return Math.abs(angle1 - angle2);
+    };
+
+    const getCircleParams = (lat1, lng1, lat2, lng2, thetaRad) => {
+        const midLat = (lat1 + lat2) / 2;
+        const midLng = (lng1 + lng2) / 2;
+        const dx = lng2 - lng1;
+        const dy = lat2 - lat1;
+        const chordLen = Math.sqrt(dx*dx + dy*dy);
+
+        const distToCenter = (chordLen / 2) / Math.tan(thetaRad);
+        const radius = (chordLen / 2) / Math.sin(thetaRad);
+
+        const udx = dx / chordLen;
+        const udy = dy / chordLen;
+        const perpX = -udy;
+        const perpY = udx;
+
+        const c1 = { lat: midLat + perpY * distToCenter, lng: midLng + perpX * distToCenter };
+        const c2 = { lat: midLat - perpY * distToCenter, lng: midLng - perpX * distToCenter };
+
+        return { c1, c2, radius };
+    };
+
+    // --- Heatmap Generator ---
+    const generateHeatmapOverlay = (landmarks, fov, bounds) => {
+        if (landmarks.length < 2) return null;
+
+        const width = 150;
+        const height = 150;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        const imgData = ctx.createImageData(width, height);
+        const data = imgData.data;
+
+        const latMin = bounds.getSouth();
+        const latMax = bounds.getNorth();
+        const lngMin = bounds.getWest();
+        const lngMax = bounds.getEast();
+
+        const mapSpan = latMax - latMin;
+        const suppressionRadius = mapSpan * 0.05;
+
+        const circles = [];
+        for (let i = 0; i < landmarks.length - 1; i++) {
+            const P1 = landmarks[i];
+            const P2 = landmarks[i+1];
+            const theta = getAngleBetweenPixels(P1.imgX, P2.imgX, fov);
+            const params = getCircleParams(P1.mapLat, P1.mapLng, P2.mapLat, P2.mapLng, theta);
+            circles.push({ ...params, p1: P1, p2: P2 });
+        }
+
+        let maxScore = 0;
+        const scores = new Float32Array(width * height);
+
+        for (let y = 0; y < height; y++) {
+            const lat = latMax - (y / height) * (latMax - latMin);
+            for (let x = 0; x < width; x++) {
+                const lng = lngMin + (x / width) * (lngMax - lngMin);
+
+                let totalError = 0;
+                let minLandmarkDist = Infinity;
+
+                for (const circle of circles) {
+                    const d1 = Math.sqrt(Math.pow(lat - circle.c1.lat, 2) + Math.pow(lng - circle.c1.lng, 2));
+                    const err1 = Math.abs(d1 - circle.radius);
+
+                    const d2 = Math.sqrt(Math.pow(lat - circle.c2.lat, 2) + Math.pow(lng - circle.c2.lng, 2));
+                    const err2 = Math.abs(d2 - circle.radius);
+
+                    totalError += Math.min(err1, err2);
+
+                    const distToP1 = Math.sqrt(Math.pow(lat - circle.p1.mapLat, 2) + Math.pow(lng - circle.p1.mapLng, 2));
+                    const distToP2 = Math.sqrt(Math.pow(lat - circle.p2.mapLat, 2) + Math.pow(lng - circle.p2.mapLng, 2));
+                    if (distToP1 < minLandmarkDist) minLandmarkDist = distToP1;
+                    if (distToP2 < minLandmarkDist) minLandmarkDist = distToP2;
+                }
+
+                const proximityWeight = Math.min(1.0, minLandmarkDist / suppressionRadius);
+                const score = (1 / (totalError + 0.00001)) * proximityWeight;
+
+                scores[y * width + x] = score;
+                if (score > maxScore) maxScore = score;
+            }
+        }
+
+        for (let i = 0; i < scores.length; i++) {
+            const val = scores[i] / maxScore;
+            const index = i * 4;
+            if (val < 0.3) {
+                data[index + 3] = 0;
+            } else {
+                const intensity = (val - 0.3) / 0.7;
+                data[index] = 255;
+                data[index + 1] = Math.floor(255 * (1 - intensity));
+                data[index + 2] = 0;
+                data[index + 3] = Math.floor(200 * intensity);
+            }
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+        return canvas.toDataURL();
+    };
+
+    // --- Main Component ---
+    function App() {
+        // -- State --
+        const [imageUrl, setImageUrl] = useState(null);
+        const [landmarks, setLandmarks] = useState([]);
+        const [inputStep, setInputStep] = useState('IDLE');
+        const [tempImgPoint, setTempImgPoint] = useState(null);
+        const [fov, setFov] = useState(60);
+
+        // Viewport
+        const [zoom, setZoom] = useState(1);
+        const [pan, setPan] = useState({ x: 0, y: 0 });
+        const [isDragging, setIsDragging] = useState(false);
+        const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+        const hasDraggedRef = useRef(false);
+
+        // Map State for Heatmap Trigger
+        const [mapBounds, setMapBounds] = useState(null);
+
+        // Leaflet Refs
+        const mapRef = useRef(null);
+        const mapContainerRef = useRef(null);
+        const layersRef = useRef({});
+        const heatmapLayerRef = useRef(null);
+
+        const PALETTE = ['#ef4444', '#22c55e', '#3b82f6', '#eab308', '#ec4899', '#8b5cf6'];
+
+        // -- Leaflet Init --
+        useEffect(() => {
+            if (!mapRef.current && mapContainerRef.current) {
+                const map = L.map(mapContainerRef.current).setView([51.505, -0.09], 13);
+
+                // Switch to Esri World Imagery (Satellite)
+                L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                }).addTo(map);
+
+                mapRef.current = map;
+
+                map.on('click', (e) => window.dispatchEvent(new CustomEvent('map-click', { detail: e.latlng })));
+
+                const updateBounds = () => setMapBounds(map.getBounds());
+                map.on('moveend', updateBounds);
+                updateBounds();
+            }
+        }, []);
+
+        // -- Cursor Management --
+        useEffect(() => {
+            const map = mapRef.current;
+            if (!map) return;
+
+            const container = map.getContainer();
+            if (inputStep === 'CLICK_MAP') {
+                L.DomUtil.addClass(container, 'crosshair-cursor');
+            } else {
+                L.DomUtil.removeClass(container, 'crosshair-cursor');
+            }
+        }, [inputStep]);
+
+        // -- Interaction Handler --
+        useEffect(() => {
+            const handleMapClick = (e) => {
+                if (inputStep === 'CLICK_MAP' && tempImgPoint) {
+                    const newLandmark = {
+                        id: Date.now(),
+                        imgX: tempImgPoint.x,
+                        imgY: tempImgPoint.y,
+                        mapLat: e.detail.lat,
+                        mapLng: e.detail.lng,
+                        color: PALETTE[landmarks.length % PALETTE.length],
+                        label: `P${landmarks.length + 1}`
+                    };
+                    setLandmarks(prev => [...prev, newLandmark]);
+                    setTempImgPoint(null);
+                    setInputStep('IDLE');
+                }
+            };
+            window.addEventListener('map-click', handleMapClick);
+            return () => window.removeEventListener('map-click', handleMapClick);
+        }, [inputStep, tempImgPoint, landmarks]);
+
+        // -- Heatmap & Geometry Renderer --
+        useEffect(() => {
+            const map = mapRef.current;
+            if (!map) return;
+
+            // 1. Render Landmarks (Markers)
+            Object.values(layersRef.current).forEach(l => map.removeLayer(l));
+            layersRef.current = {};
+
+            landmarks.forEach(lm => {
+                const icon = L.divIcon({
+                    className: 'bg-transparent',
+                    html: `<div class="w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-xs font-bold text-white bg-opacity-90" style="background-color: ${lm.color};">${lm.label}</div>`
+                });
+                const marker = L.marker([lm.mapLat, lm.mapLng], { icon }).addTo(map);
+                layersRef.current[`lm_${lm.id}`] = marker;
+            });
+
+            // 2. Render Heatmap Overlay
+            if (landmarks.length >= 2 && mapBounds) {
+                const overlayUrl = generateHeatmapOverlay(landmarks, fov, mapBounds);
+
+                if (heatmapLayerRef.current) {
+                    map.removeLayer(heatmapLayerRef.current);
+                }
+
+                if (overlayUrl) {
+                    const overlay = L.imageOverlay(overlayUrl, mapBounds, { opacity: 0.9 }).addTo(map);
+                    heatmapLayerRef.current = overlay;
+                }
+            }
+
+            // 3. Optional: Draw Chord Lines
+            if (landmarks.length >= 2) {
+                for (let i = 0; i < landmarks.length - 1; i++) {
+                    const P1 = landmarks[i];
+                    const P2 = landmarks[i+1];
+                    const line = L.polyline([[P1.mapLat, P1.mapLng], [P2.mapLat, P2.mapLng]], {
+                        color: 'white', weight: 1, opacity: 0.2, dashArray: '4,4'
+                    }).addTo(map);
+                    layersRef.current[`chord_${i}`] = line;
+                }
+            }
+
+        }, [landmarks, fov, mapBounds]);
+
+
+        // --- UI Handlers ---
+        const deleteLandmark = (id) => {
+            setLandmarks(prev => prev.filter(lm => lm.id !== id));
+        };
+
+        const cancelCurrentAction = () => {
+            setTempImgPoint(null);
+            setInputStep('IDLE');
+        };
+
+        const resetImageView = () => {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+        };
+
+        // Enhanced Image Interaction - UPDATED TO FIX ZOOM/PAN OFFSET
+        const handleImageClick = (e) => {
+            // If we dragged, ignore the click
+            if (hasDraggedRef.current) {
+                hasDraggedRef.current = false;
+                return;
+            }
+
+            if (inputStep !== 'CLICK_IMG' && inputStep !== 'IDLE') return;
+
+            const rect = e.currentTarget.getBoundingClientRect(); // Dimensions of the outer wrapper (viewport)
+
+            // 1. Calculate click position relative to the top-left of the Viewport
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            // 2. Transform this viewport coordinate into the Local Coordinate space of the zoomed image
+            // Formula: ScreenPos = (LocalPos * Zoom) + Pan
+            // Therefore: LocalPos = (ScreenPos - Pan) / Zoom
+            const localX = (clickX - pan.x) / zoom;
+            const localY = (clickY - pan.y) / zoom;
+
+            // 3. Normalize to 0..1 (Percentage) based on the image's base dimensions
+            // Since the inner container is 100% of the wrapper (before transform), we divide by rect.width/height
+            const x = localX / rect.width;
+            const y = localY / rect.height;
+
+            setTempImgPoint({ x, y });
+            setInputStep('CLICK_MAP');
+        };
+
+        const handleImageUpload = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                setImageUrl(URL.createObjectURL(file));
+                setLandmarks([]);
+                setInputStep('IDLE');
+                setTempImgPoint(null);
+            }
+        };
+
+        const handleWheel = (e) => {
+            if(!imageUrl) return;
+            e.preventDefault();
+            setZoom(z => Math.max(1, Math.min(10, z - e.deltaY * 0.001)));
+        };
+
+        const handleMouseDown = (e) => {
+            setIsDragging(true);
+            setDragStart({ x: e.clientX, y: e.clientY });
+            hasDraggedRef.current = false;
+        };
+
+        const handleMouseMove = (e) => {
+            if (!isDragging) return;
+
+            const deltaX = e.clientX - dragStart.x;
+            const deltaY = e.clientY - dragStart.y;
+
+            // If moved more than tiny threshold, treat as drag
+            if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+                hasDraggedRef.current = true;
+                setPan(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }));
+                setDragStart({ x: e.clientX, y: e.clientY });
+            }
+        };
+
+        const handleMouseUp = () => setIsDragging(false);
+
+        return (
+            <div className="flex flex-col h-screen bg-gray-900 text-gray-100 font-sans">
+
+                {/* Header */}
+                <div className="h-14 bg-gray-800 border-b border-gray-700 flex items-center justify-between px-4 shrink-0 shadow-lg z-20">
+                    <div className="flex items-center space-x-2">
+                        <IconTarget className="text-red-500 w-6 h-6" />
+                        <span className="font-bold text-lg">GeoResect <span className="text-gray-500 font-normal text-sm">| Probability Heatmap</span></span>
+                    </div>
+                    <div className="flex items-center space-x-3">
+                        <label className="cursor-pointer bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-sm font-semibold flex items-center transition-colors">
+                            <IconUpload className="w-4 h-4 mr-2" />
+                            Upload Photo
+                            <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} />
+                        </label>
+                    </div>
+                </div>
+
+                <div className="flex-1 flex overflow-hidden">
+
+                    {/* LEFT: IMAGE PANEL */}
+                    <div className="w-1/2 bg-black relative border-r border-gray-700 flex flex-col overflow-hidden">
+                        {!imageUrl ? (
+                            <div className="flex-1 flex flex-col items-center justify-center text-gray-600 select-none">
+                                <IconUpload className="w-16 h-16 mb-4 opacity-20" />
+                                <p>Upload a photo to begin</p>
+                            </div>
+                        ) : (
+                            <div
+                                className="flex-1 relative overflow-hidden"
+                                onWheel={handleWheel}
+                                onMouseDown={handleMouseDown}
+                                onMouseMove={handleMouseMove}
+                                onMouseUp={handleMouseUp}
+                                onMouseLeave={handleMouseUp}
+                                onClick={handleImageClick}
+                                style={{ cursor: inputStep === 'CLICK_IMG' ? 'crosshair' : (isDragging ? 'grabbing' : 'grab') }}
+                            >
+                                <div
+                                    className="absolute origin-top-left transition-transform duration-75"
+                                    style={{
+                                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                                        width: '100%', height: '100%'
+                                    }}
+                                >
+                                    <div className="relative inline-block w-full h-full">
+                                        <img src={imageUrl} className="max-w-none absolute top-0 left-0 w-full h-full object-contain pointer-events-none" />
+                                        {/* We rely on container onClick now for drag detection */}
+
+                                        <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 20 }}>
+                                            {landmarks.map(lm => (
+                                                <g key={lm.id}>
+                                                    <line x1={`${lm.imgX * 100}%`} y1="0" x2={`${lm.imgX * 100}%`} y2="100%" stroke={lm.color} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                                                </g>
+                                            ))}
+                                            {tempImgPoint && (
+                                                <line x1={`${tempImgPoint.x * 100}%`} y1="0" x2={`${tempImgPoint.x * 100}%`} y2="100%" stroke="white" strokeWidth="1" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+                                            )}
+                                        </svg>
+                                        {landmarks.map(lm => (
+                                            <div key={lm.id} className="absolute top-0 px-1 py-0.5 rounded text-[10px] font-bold text-white shadow-sm pointer-events-none origin-top" style={{ left: `${lm.imgX * 100}%`, backgroundColor: lm.color, transform: `translateX(-50%) scale(${1/zoom})` }}>
+                                                {lm.label}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Zoom & View Controls */}
+                                <div className="absolute bottom-4 left-4 flex flex-col bg-gray-800 rounded-lg shadow-lg border border-gray-700 overflow-hidden z-30">
+                                    <button onClick={() => setZoom(z => Math.min(10, z + 0.5))} className="p-2 hover:bg-gray-700 border-b border-gray-700 text-gray-300" title="Zoom In">
+                                        <IconPlus className="w-5 h-5" />
+                                    </button>
+                                    <button onClick={() => setZoom(z => Math.max(1, z - 0.5))} className="p-2 hover:bg-gray-700 border-b border-gray-700 text-gray-300" title="Zoom Out">
+                                        <IconMinus className="w-5 h-5" />
+                                    </button>
+                                    <button onClick={resetImageView} className="p-2 hover:bg-gray-700 text-gray-300" title="Reset View">
+                                        <IconMaximize className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                {/* Action Button Overlay */}
+                                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center space-x-2">
+                                    {inputStep === 'IDLE' && (
+                                        <button onClick={() => setInputStep('CLICK_IMG')} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-full shadow-lg font-bold text-sm transition-transform hover:scale-105">
+                                            + Add Landmark
+                                        </button>
+                                    )}
+                                    {inputStep === 'CLICK_IMG' && (
+                                        <>
+                                            <div className="bg-black/80 text-white px-4 py-2 rounded-full backdrop-blur border border-white/20 text-sm">
+                                                Click vertical line on <span className="text-blue-400 font-bold">IMAGE</span>
+                                            </div>
+                                            <button onClick={cancelCurrentAction} className="bg-red-500/80 hover:bg-red-600 text-white p-2 rounded-full backdrop-blur border border-white/20">
+                                                <IconX className="w-4 h-4" />
+                                            </button>
+                                        </>
+                                    )}
+                                    {inputStep === 'CLICK_MAP' && (
+                                        <>
+                                            <div className="bg-black/80 text-white px-4 py-2 rounded-full backdrop-blur border border-white/20 text-sm">
+                                                Click matching point on <span className="text-green-400 font-bold">MAP</span>
+                                            </div>
+                                            <button onClick={cancelCurrentAction} className="bg-red-500/80 hover:bg-red-600 text-white p-2 rounded-full backdrop-blur border border-white/20">
+                                                <IconX className="w-4 h-4" />
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* RIGHT: MAP & SOLVER */}
+                    <div className="w-1/2 relative bg-gray-100 flex flex-col">
+                        <div ref={mapContainerRef} className="w-full h-full z-0" />
+
+                        {/* Landmarks List Overlay */}
+                        <div className="absolute top-4 right-4 z-[1000] w-64 bg-gray-900/95 backdrop-blur rounded-lg border border-gray-700 shadow-xl overflow-hidden max-h-[50vh] flex flex-col">
+                            <div className="p-3 border-b border-gray-700 bg-gray-800/50 flex justify-between items-center">
+                                <h3 className="text-xs font-bold text-gray-300 uppercase">Active Landmarks</h3>
+                                <button onClick={() => setLandmarks([])} className="text-[10px] text-red-400 hover:text-red-300 uppercase font-bold tracking-wider">
+                                    Clear All
+                                </button>
+                            </div>
+                            <div className="overflow-y-auto p-2 space-y-2 flex-1">
+                                {landmarks.length === 0 ? (
+                                    <div className="text-center text-gray-600 text-xs py-2 italic">No points added</div>
+                                ) : (
+                                    landmarks.map((lm, i) => (
+                                        <div key={lm.id} className="flex items-center justify-between bg-gray-800 p-2 rounded border border-gray-700 hover:border-gray-500 transition-colors">
+                                            <div className="flex items-center space-x-2">
+                                                <div className="w-3 h-3 rounded-full" style={{ background: lm.color }}></div>
+                                                <span className="text-xs font-mono font-bold text-gray-200">{lm.label}</span>
+                                            </div>
+                                            <button
+                                                onClick={() => deleteLandmark(lm.id)}
+                                                className="text-gray-500 hover:text-red-400 transition-colors p-1"
+                                                title="Remove Point"
+                                            >
+                                                <IconTrash className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Solver Panel */}
+                        <div className="absolute bottom-6 left-6 right-6 bg-gray-900/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 p-4 z-[1000]">
+                            <div className="flex items-center space-x-6">
+                                <div className="flex-1">
+                                    <div className="flex justify-between items-end mb-2">
+                                        <label className="text-xs font-bold text-gray-400 uppercase">Solver: Field of View (Zoom)</label>
+                                        <span className="text-sm font-mono text-blue-400 font-bold">{fov}°</span>
+                                    </div>
+                                    <input type="range" min="10" max="120" step="1" value={fov} onChange={(e) => setFov(Number(e.target.value))} className="range-slider" />
+                                    <p className="text-[10px] text-gray-400 mt-2 leading-tight">
+                                        <span className="text-red-400 font-bold">Search for Red!</span> Pan map and adjust slider. Red areas are the most likely location.
+                                    </p>
+                                </div>
+
+                                <div className="w-px h-12 bg-gray-700"></div>
+
+                                <div className="w-1/3">
+                                    <div className="text-xs font-bold text-gray-400 uppercase mb-2">Status</div>
+                                    {landmarks.length < 2 ? (
+                                        <div className="text-gray-500 text-xs italic">Need 2+ points to solve</div>
+                                    ) : (
+                                        <div className="text-green-400 text-sm font-medium flex items-center">
+                                            <div className="w-2 h-2 bg-red-500 rounded-full mr-2 animate-pulse"></div>
+                                            Heatmap Active
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+</script>
+</body>
+</html>

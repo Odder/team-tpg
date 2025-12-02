@@ -79,40 +79,60 @@ const GeoCalc = {
     },
 
     /**
-     * Find the nearest reflected area to a given point
+     * Find the best reflection based on midpoint distance to target
+     * This correctly handles antipodal cases by optimizing for the actual score
      * @param {Object} clickPoint - Clicked point {lat, lng}
-     * @param {Array} reflections - Array of reflection objects {lat, lng, radius}
-     * @returns {Object|null} Nearest reflection with distance info or null
+     * @param {Array} reflections - Array of reflection objects {lat, lng, radius, sourceIndex}
+     * @param {Array} sources - Array of source points {lat, lng}
+     * @param {Object} target - Target point {lat, lng}
+     * @returns {Object|null} Best reflection with distance info or null
      */
-    findNearestReflection(clickPoint, reflections) {
+    findNearestReflection(clickPoint, reflections, sources, target) {
         if (!reflections || reflections.length === 0) {
             return null;
         }
 
-        let nearest = null;
-        let minDistance = Infinity;
+        let best = null;
+        let bestScore = Infinity; // Best (smallest) midpoint-to-target distance
 
         reflections.forEach((reflection, index) => {
+            // Get the source for this reflection
+            const source = sources[reflection.sourceIndex];
+            const sourcePoint = { lat: source.lat, lng: source.lng };
+
+            // Calculate midpoint between click and source
+            const clickTurf = turf.point([clickPoint.lng, clickPoint.lat]);
+            const sourceTurf = turf.point([sourcePoint.lng, sourcePoint.lat]);
+            const midpointTurf = turf.midpoint(clickTurf, sourceTurf);
+            const midpoint = {
+                lat: midpointTurf.geometry.coordinates[1],
+                lng: midpointTurf.geometry.coordinates[0]
+            };
+
+            // Calculate score: distance from midpoint to target
+            const scoreDistance = this.getDistance(midpoint, target);
+
+            // Also calculate distance to reflection (for display purposes)
             const reflectionCenter = { lat: reflection.lat, lng: reflection.lng };
             const distanceKm = this.getDistance(clickPoint, reflectionCenter);
-
-            // Calculate distance to the edge of the circle
-            const radiusKm = reflection.radius / 1000; // Convert meters to km
+            const radiusKm = reflection.radius / 1000;
             const distanceToEdge = Math.max(0, distanceKm - radiusKm);
 
-            if (distanceToEdge < minDistance) {
-                minDistance = distanceToEdge;
-                nearest = {
+            // Pick the reflection with the best (smallest) score
+            if (scoreDistance < bestScore) {
+                bestScore = scoreDistance;
+                best = {
                     reflection: reflection,
                     index: index,
                     distanceToCenter: distanceKm,
                     distanceToEdge: distanceToEdge,
-                    isInside: distanceKm <= radiusKm
+                    isInside: distanceKm <= radiusKm,
+                    scoreDistance: scoreDistance
                 };
             }
         });
 
-        return nearest;
+        return best;
     },
 
     /**

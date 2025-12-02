@@ -295,10 +295,10 @@ function exportData() {
         return;
     }
 
-    // Generate CSV content
+    // Generate CSV content (format: lat,lng,radius,"title")
     const lines = points.map(point => {
         const title = point.title ? `,"${point.title}"` : '';
-        return `${point.lng},${point.lat},${point.radius}${title}`;
+        return `${point.lat},${point.lng},${point.radius}${title}`;
     });
 
     const csvContent = lines.join('\n') + '\n';
@@ -334,9 +334,9 @@ function importData(fileContent) {
         // Remove title from line for easier parsing
         const dataLine = title ? line.replace(/"[^"]+"/, '').trim() : line;
 
-        // Parse lng,lat,radius_km
+        // Parse lat,lng,radius_km
         const parts = dataLine.split(',').map(s => s.trim()).filter(s => s);
-        const [lng, lat, radiusKm] = parts.map(parseFloat);
+        const [lat, lng, radiusKm] = parts.map(parseFloat);
 
         if (isNaN(lng) || isNaN(lat) || isNaN(radiusKm)) {
             console.warn(`Skipping invalid line ${index + 1}: ${line}`);

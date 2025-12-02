@@ -25,12 +25,12 @@ const state = {
 /**
  * Load source points from cellery-list file
  * Supports formats:
- *   - lng,lat,radius_km
- *   - lng,lat,radius_km,"title"
+ *   - lat,lng,radius_km
+ *   - lat,lng,radius_km,"title"
  */
 async function loadSourcePoints() {
     try {
-        const response = await fetch('cellery-list.csv');
+        const response = await fetch('geospot-list.csv');
         const text = await response.text();
 
         // Parse each line
@@ -46,9 +46,9 @@ async function loadSourcePoints() {
                 // Remove title from line for easier parsing
                 const dataLine = title ? line.replace(/"[^"]+"/, '').trim() : line;
 
-                // Parse lng,lat,radius_km
+                // Parse lat,lng,radius_km
                 const parts = dataLine.split(',').map(s => s.trim()).filter(s => s);
-                const [lng, lat, radiusKm] = parts.map(parseFloat);
+                const [lat, lng, radiusKm] = parts.map(parseFloat);
 
                 if (isNaN(lng) || isNaN(lat) || isNaN(radiusKm)) {
                     console.warn(`Skipping invalid line ${index + 1}: ${line}`);
@@ -80,7 +80,7 @@ function initMap() {
     // Create map
     state.map = L.map('map', {
         center: [20, 0],
-        zoom: 2,
+        zoom: 3,
         minZoom: 2,
         maxZoom: 18
     });
@@ -233,8 +233,8 @@ function calculateReflections() {
     drawTarget(target);
     drawReflections(state.reflections);
 
-    // Zoom to show all points
-    zoomToFitAll();
+    // Keep zoom at level 2 (don't auto-zoom)
+    // zoomToFitAll();
 
     // Show distance info message
     const distanceInfo = document.getElementById('distance-info');
@@ -377,7 +377,7 @@ function handleMapClick(e) {
     }
 
     const clickPoint = { lat: e.latlng.lat, lng: e.latlng.lng };
-    const nearest = GeoCalc.findNearestReflection(clickPoint, state.reflections);
+    const nearest = GeoCalc.findNearestReflection(clickPoint, state.reflections, SOURCE_POINTS, state.target);
 
     if (!nearest) {
         return;
