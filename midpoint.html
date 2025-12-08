@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Midpoint Calculator</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .point-input-group {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .point-input-group h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .point-marker {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .point-marker.point-a {
+            background: #3498db;
+        }
+
+        .point-marker.point-b {
+            background: #9b59b6;
+        }
+
+        .point-input-group input {
+            font-size: 13px;
+            padding: 10px;
+        }
+
+        .point-input-group small {
+            display: block;
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 11px;
+        }
+
+        .midpoint-result {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .midpoint-result h3 {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .midpoint-coords {
+            font-size: 18px;
+            font-weight: 600;
+            color: #f1c40f;
+            margin-bottom: 8px;
+            font-family: monospace;
+        }
+
+        .midpoint-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .midpoint-actions button {
+            flex: 1;
+            padding: 8px;
+            font-size: 12px;
+        }
+
+        .btn-secondary {
+            background: var(--secondary-bg);
+        }
+
+        .distance-info {
+            padding: 12px;
+            background: var(--accent);
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .distance-info.has-target {
+            border: 2px solid var(--green);
+            background: var(--primary-bg);
+        }
+
+        .distance-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+
+        .distance-label {
+            color: var(--text-secondary);
+        }
+
+        .distance-value {
+            font-weight: 600;
+            font-family: monospace;
+        }
+
+        .instructions {
+            font-size: 12px;
+            color: var(--text-secondary);
+            padding: 12px;
+            background: var(--accent);
+            border-radius: 8px;
+            line-height: 1.5;
+        }
+
+        .instructions strong {
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <nav class="site-nav" id="site-nav"></nav>
+
+            <h1>Midpoint Calculator</h1>
+
+            <!-- Point A Input -->
+            <div class="point-input-group">
+                <h3><span class="point-marker point-a"></span> Point A</h3>
+                <input
+                    type="text"
+                    id="point-a-coords"
+                    placeholder="lat, lng (click map or paste)"
+                    autocomplete="off">
+                <small>Click map to place, or paste coordinates</small>
+            </div>
+
+            <!-- Point B Input -->
+            <div class="point-input-group">
+                <h3><span class="point-marker point-b"></span> Point B</h3>
+                <input
+                    type="text"
+                    id="point-b-coords"
+                    placeholder="lat, lng (click map or paste)"
+                    autocomplete="off">
+                <small>Click map to place, or paste coordinates</small>
+            </div>
+
+            <!-- Midpoint Result -->
+            <div class="midpoint-result" id="midpoint-result" style="display: none;">
+                <h3>Midpoint</h3>
+                <div class="midpoint-coords" id="midpoint-coords">--</div>
+                <div class="midpoint-actions">
+                    <button id="copy-midpoint-btn">Copy</button>
+                    <button id="open-maps-btn" class="btn-secondary">Google Maps</button>
+                </div>
+            </div>
+
+            <!-- Target Coordinates -->
+            <div class="input-group">
+                <label for="target-coords">Target Coordinates</label>
+                <input
+                    type="text"
+                    id="target-coords"
+                    placeholder="lat, lng (optional)"
+                    autocomplete="off">
+            </div>
+
+            <!-- Distance Info -->
+            <div class="distance-info" id="distance-info">
+                <div class="distance-row">
+                    <span class="distance-label">A to B:</span>
+                    <span class="distance-value" id="dist-a-b">--</span>
+                </div>
+                <div class="distance-row">
+                    <span class="distance-label">Midpoint to Target:</span>
+                    <span class="distance-value" id="dist-mid-target">--</span>
+                </div>
+            </div>
+
+            <!-- Instructions -->
+            <div class="instructions">
+                <strong>How to use:</strong><br>
+                1. Click the map to place Point A (blue)<br>
+                2. Click again to place Point B (purple)<br>
+                3. Drag points to adjust positions<br>
+                4. The midpoint (yellow) updates live
+            </div>
+        </div>
+
+        <!-- Map Container -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <!-- Turf.js for geodesic calculations -->
+    <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+
+    <!-- Shared utilities -->
+    <script src="lib/coord-utils.js"></script>
+    <script src="lib/data-loader.js"></script>
+    <script src="lib/map-utils.js"></script>
+    <script src="lib/nav-utils.js"></script>
+
+    <!-- Custom JS -->
+    <script src="geo-calc.js"></script>
+    <script src="midpoint.js"></script>
+</body>
+</html>

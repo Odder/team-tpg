@@ -8,9 +8,7 @@ let SOURCE_POINTS = [];
 // Application state
 const state = {
     map: null,
-    sourceLayers: null,
-    targetLayer: null,
-    reflectionLayers: null,
+    layers: null,
     measurementMarker: null,
     measurementLine: null,
     sourceToClickLine: null,
@@ -23,79 +21,57 @@ const state = {
 };
 
 /**
- * Load source points from cellery-list file
- * Supports formats:
- *   - lat,lng,radius_km
- *   - lat,lng,radius_km,"title"
+ * Update file display UI
+ */
+function updateSourceFileDisplay(filename, count) {
+    const nameEl = document.getElementById('source-file-name');
+    const statusEl = document.getElementById('source-file-status');
+
+    if (filename && count > 0) {
+        nameEl.textContent = filename;
+        statusEl.textContent = `${count} points loaded`;
+    } else if (filename) {
+        nameEl.textContent = filename;
+        statusEl.textContent = 'No valid points';
+    } else {
+        nameEl.textContent = 'No file loaded';
+        statusEl.textContent = 'Click to upload';
+    }
+}
+
+/**
+ * Handle file upload for source points
+ */
+function handleSourceFileUpload(event) {
+    DataLoader.handleFileInput(event, 'reflection_source', (points, filename) => {
+        SOURCE_POINTS = points;
+        updateSourceFileDisplay(filename, points.length);
+        drawSourcePoints();
+    });
+}
+
+/**
+ * Load source points from storage
  */
 async function loadSourcePoints() {
-    try {
-        const response = await fetch('geospot-list.csv');
-        const text = await response.text();
-
-        // Parse each line
-        SOURCE_POINTS = text
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0)
-            .map((line, index) => {
-                // Check if line has a title (contains quoted text)
-                const titleMatch = line.match(/"([^"]+)"/);
-                const title = titleMatch ? titleMatch[1] : null;
-
-                // Remove title from line for easier parsing
-                const dataLine = title ? line.replace(/"[^"]+"/, '').trim() : line;
-
-                // Parse lat,lng,radius_km
-                const parts = dataLine.split(',').map(s => s.trim()).filter(s => s);
-                const [lat, lng, radiusKm] = parts.map(parseFloat);
-
-                if (isNaN(lng) || isNaN(lat) || isNaN(radiusKm)) {
-                    console.warn(`Skipping invalid line ${index + 1}: ${line}`);
-                    return null;
-                }
-
-                return {
-                    lat: lat,
-                    lng: lng,
-                    radius: radiusKm * 1000, // Convert km to meters
-                    title: title
-                };
-            })
-            .filter(point => point !== null);
-
-        console.log(`Loaded ${SOURCE_POINTS.length} source points from cellery-list`);
-        return true;
-    } catch (error) {
-        console.error('Error loading cellery-list:', error);
-        alert('Failed to load cellery-list file. Please make sure the file exists.');
-        return false;
-    }
+    const result = await DataLoader.loadWithFallback('reflection_source', null);
+    SOURCE_POINTS = result.points;
+    updateSourceFileDisplay(result.filename, SOURCE_POINTS.length);
+    return true; // Don't fail if no points - user can upload
 }
 
 /**
  * Initialize the Leaflet map
  */
 function initMap() {
-    // Create map
-    state.map = L.map('map', {
-        center: [20, 0],
-        zoom: 3,
-        minZoom: 2,
-        maxZoom: 18
-    });
+    // Create map using shared utility
+    state.map = MapUtils.createMap('map');
 
-    // Add tile layer (using CartoDB Dark Matter for modern look)
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
-    }).addTo(state.map);
+    // Create layer groups
+    state.layers = MapUtils.createLayers(state.map, ['source', 'target', 'reflection']);
 
-    // Initialize layer groups
-    state.sourceLayers = L.layerGroup().addTo(state.map);
-    state.targetLayer = L.layerGroup().addTo(state.map);
-    state.reflectionLayers = L.layerGroup().addTo(state.map);
+    // Add context menu for copying coordinates
+    MapUtils.addContextMenu(state.map);
 
     // Draw source points
     drawSourcePoints();
@@ -108,7 +84,7 @@ function initMap() {
  * Draw source points on the map as blue circles
  */
 function drawSourcePoints() {
-    state.sourceLayers.clearLayers();
+    state.layers.source.clearLayers();
 
     SOURCE_POINTS.forEach((point, index) => {
         // Check if this source is too far from target
@@ -166,7 +142,7 @@ function drawSourcePoints() {
         }
 
         circle.bindPopup(popupContent);
-        circle.addTo(state.sourceLayers);
+        circle.addTo(state.layers.source);
 
         // Add label for active source
         if (isActive) {
@@ -178,33 +154,16 @@ function drawSourcePoints() {
                     iconAnchor: [30, -10]
                 })
             });
-            label.addTo(state.sourceLayers);
+            label.addTo(state.layers.source);
         }
     });
 }
 
 /**
- * Parse coordinate input and validate
- * @param {string} input - Coordinate input string
- * @returns {Object|null} Parsed coordinates {lat, lng} or null if invalid
+ * Parse coordinate input and validate (delegates to CoordUtils)
  */
 function parseCoordinates(input) {
-    // Remove extra spaces and split by comma
-    const parts = input.trim().split(',').map(p => p.trim());
-
-    if (parts.length !== 2) {
-        return null;
-    }
-
-    const lat = parseFloat(parts[0]);
-    const lng = parseFloat(parts[1]);
-
-    // Validate ranges
-    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        return null;
-    }
-
-    return { lat, lng };
+    return CoordUtils.parse(input);
 }
 
 /**
@@ -218,6 +177,9 @@ function calculateReflections() {
         alert('Invalid coordinates. Please use format: lat, lng (e.g., 40.7128, -74.0060)');
         return;
     }
+
+    // Save target for other pages
+    CoordUtils.saveTarget(input);
 
     state.target = target;
 
@@ -246,31 +208,25 @@ function calculateReflections() {
  * @param {Object} target - Target coordinates {lat, lng}
  */
 function drawTarget(target) {
-    state.targetLayer.clearLayers();
+    state.layers.target.clearLayers();
 
-    const marker = L.circleMarker([target.lat, target.lng], {
-        radius: 8,
-        color: '#e74c3c',
-        fillColor: '#e74c3c',
-        fillOpacity: 0.8,
-        weight: 3
-    });
-
-    marker.bindPopup(`
+    MapUtils.drawMarker(state.layers.target, target, {
+        color: MapUtils.colors.red,
+        fillColor: MapUtils.colors.red
+    }, `
         <strong>Target Point</strong><br>
         Lat: ${target.lat.toFixed(4)}<br>
         Lng: ${target.lng.toFixed(4)}
     `);
-
-    marker.addTo(state.targetLayer);
 }
 
 /**
- * Draw reflection points as green circles
+ * Draw reflection points as circles
+ * Green = good reflections, Orange = antipodal (>10,000km, midpoint approaches antipode)
  * @param {Array} reflections - Array of reflection objects
  */
 function drawReflections(reflections) {
-    state.reflectionLayers.clearLayers();
+    state.layers.reflection.clearLayers();
 
     reflections.forEach((reflection, index) => {
         // Check if this is the active reflection
@@ -296,8 +252,13 @@ function drawReflections(reflections) {
             color = '#ff6b35';
             fillOpacity = 0.5;
             weight = 5;
+        } else if (reflection.isAntipodal) {
+            // Antipodal reflection (>10,000km) - orange to indicate less useful
+            color = '#e67e22';
+            fillOpacity = 0.12;
+            weight = 2;
         } else {
-            // Normal reflection
+            // Good reflection (within quarter Earth circumference)
             color = '#2ecc71';
             fillOpacity = 0.15;
             weight = 2;
@@ -332,11 +293,13 @@ function drawReflections(reflections) {
 
         if (isTooFar) {
             popupContent += `<br><em style="color: #999;">Source too far from target</em>`;
+        } else if (reflection.isAntipodal) {
+            popupContent += `<br><em style="color: #e67e22;">Antipodal reflection (>${Math.round(GeoCalc.ANTIPODAL_THRESHOLD_KM / 1000)}k km)</em>`;
         }
 
         circle.bindPopup(popupContent);
 
-        circle.addTo(state.reflectionLayers);
+        circle.addTo(state.layers.reflection);
     });
 }
 
@@ -535,17 +498,22 @@ function loadFromUrlHash() {
  * Initialize application
  */
 async function init() {
-    // Load source points from file first
-    const loaded = await loadSourcePoints();
+    // Render navigation
+    NavUtils.render('site-nav', 'index');
 
-    if (!loaded) {
-        return; // Exit if loading failed
-    }
+    // Load source points from storage
+    await loadSourcePoints();
 
     state.isLoading = false;
 
     // Initialize map
     initMap();
+
+    // File upload handlers
+    document.getElementById('source-file-btn').addEventListener('click', () => {
+        document.getElementById('source-file').click();
+    });
+    document.getElementById('source-file').addEventListener('change', handleSourceFileUpload);
 
     // Set up event listeners
     document.getElementById('calculate-btn').addEventListener('click', calculateReflections);
@@ -557,8 +525,13 @@ async function init() {
         }
     });
 
-    // Load from URL hash if present
-    loadFromUrlHash();
+    // Load from URL hash if present, otherwise load saved target
+    if (!loadFromUrlHash()) {
+        const savedTarget = CoordUtils.loadTarget();
+        if (savedTarget) {
+            document.getElementById('target-coords').value = savedTarget;
+        }
+    }
 }
 
 // Start application when DOM is ready

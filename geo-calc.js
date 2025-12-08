@@ -9,6 +9,12 @@ const GeoCalc = {
     MAX_DISTANCE_KM: 20000,
 
     /**
+     * Threshold for "good" reflections (quarter Earth's circumference in km)
+     * Beyond this, the midpoint approaches the antipodal point
+     */
+    ANTIPODAL_THRESHOLD_KM: 10000,
+
+    /**
      * Calculate reflection point where target is the midpoint between source and reflection
      * @param {Object} source - Source point {lat, lng}
      * @param {Object} target - Target point {lat, lng}
@@ -44,7 +50,7 @@ const GeoCalc = {
      * Calculate all reflections for a list of source points
      * @param {Array} sources - Array of source points {lat, lng, radius}
      * @param {Object} target - Target point {lat, lng}
-     * @returns {Array} Array of reflection objects {lat, lng, radius, sourceIndex, distance}
+     * @returns {Array} Array of reflection objects {lat, lng, radius, sourceIndex, distance, isAntipodal}
      */
     calculateAllReflections(sources, target) {
         const reflections = [];
@@ -58,7 +64,8 @@ const GeoCalc = {
                     lng: reflection.lng,
                     radius: source.radius, // Keep same radius as source
                     sourceIndex: index,
-                    distance: reflection.distance
+                    distance: reflection.distance,
+                    isAntipodal: reflection.distance > this.ANTIPODAL_THRESHOLD_KM
                 });
             }
         });

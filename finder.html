@@ -97,24 +97,56 @@
         .file-inputs {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 12px;
         }
 
-        .file-input-row {
+        .file-input-box {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 12px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
         }
 
-        .file-input-row label {
-            flex: 0 0 60px;
-            font-size: 12px;
+        .file-input-box .color-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
         }
 
-        .file-input-row input[type="text"] {
+        .file-input-box .color-dot.blue { background: #3498db; }
+        .file-input-box .color-dot.purple { background: #9b59b6; }
+
+        .file-input-box .file-info {
             flex: 1;
-            font-size: 12px;
-            padding: 8px;
+            min-width: 0;
+        }
+
+        .file-input-box .file-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-input-box .file-status {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .file-input-box .upload-btn {
+            padding: 6px 12px;
+            font-size: 11px;
+            background: var(--secondary-bg);
+            flex-shrink: 0;
+        }
+
+        .file-input-box input[type="file"] {
+            display: none;
         }
     </style>
 </head>
@@ -122,7 +154,7 @@
     <div class="container">
         <!-- Control Panel -->
         <div class="control-panel">
-            <a href="index.html" class="nav-link">← Back to Calculator</a>
+            <nav class="site-nav" id="site-nav"></nav>
 
             <h1>Combination Finder</h1>
 
@@ -130,13 +162,23 @@
             <div class="input-group">
                 <label>Data Files</label>
                 <div class="file-inputs">
-                    <div class="file-input-row">
-                        <label>List A:</label>
-                        <input type="text" id="file-a" value="cellery-list-2.csv">
+                    <div class="file-input-box">
+                        <span class="color-dot blue"></span>
+                        <div class="file-info">
+                            <div class="file-name" id="file-a-name">No file loaded</div>
+                            <div class="file-status" id="file-a-status">Click to upload List A</div>
+                        </div>
+                        <button class="upload-btn" id="file-a-btn">Upload</button>
+                        <input type="file" id="file-a" accept=".csv,.txt">
                     </div>
-                    <div class="file-input-row">
-                        <label>List B:</label>
-                        <input type="text" id="file-b" value="geospot-list.csv">
+                    <div class="file-input-box">
+                        <span class="color-dot purple"></span>
+                        <div class="file-info">
+                            <div class="file-name" id="file-b-name">No file loaded</div>
+                            <div class="file-status" id="file-b-status">Click to upload List B</div>
+                        </div>
+                        <button class="upload-btn" id="file-b-btn">Upload</button>
+                        <input type="file" id="file-b" accept=".csv,.txt">
                     </div>
                 </div>
             </div>
@@ -214,6 +256,13 @@
 
     <!-- Turf.js for geodesic calculations -->
     <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+
+    <!-- Shared utilities -->
+    <script src="lib/coord-utils.js"></script>
+    <script src="lib/data-loader.js"></script>
+    <script src="lib/map-utils.js"></script>
+    <script src="lib/nav-utils.js"></script>
+    <script src="lib/geo-worker-api.js"></script>
 
     <!-- Custom JS -->
     <script src="geo-calc.js"></script>

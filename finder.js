@@ -10,10 +10,7 @@ let selectedComboIndex = null;
 
 // Map and layers
 let map = null;
-let pointLayersA = L.layerGroup();
-let pointLayersB = L.layerGroup();
-let targetLayer = L.layerGroup();
-let highlightLayer = L.layerGroup();
+let layers = {};
 let midpointClusterGroup = null;
 let rawMidpointLayer = L.layerGroup();
 let heatmapLayer = L.layerGroup();
@@ -23,80 +20,24 @@ let allMidpoints = []; // Cache for all calculated midpoints
  * Initialize the map
  */
 function initMap() {
-    map = L.map('map', {
-        center: [20, 0],
-        zoom: 3,
-        minZoom: 2,
-        maxZoom: 18
-    });
-
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
-    }).addTo(map);
-
-    pointLayersA.addTo(map);
-    pointLayersB.addTo(map);
-    targetLayer.addTo(map);
-    highlightLayer.addTo(map);
+    map = MapUtils.createMap('map');
+    layers = MapUtils.createLayers(map, ['pointsA', 'pointsB', 'target', 'highlight']);
+    MapUtils.addContextMenu(map);
     // heatmapLayer added on-demand
 }
 
 /**
- * Load points from a CSV file
+ * Load points from a CSV file (delegates to DataLoader)
  */
 async function loadPoints(filename) {
-    try {
-        const response = await fetch(filename);
-        const text = await response.text();
-
-        const points = text
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line.length > 0)
-            .map((line, index) => {
-                const titleMatch = line.match(/"([^"]+)"/);
-                const title = titleMatch ? titleMatch[1] : null;
-                const dataLine = title ? line.replace(/"[^"]+"/, '').trim() : line;
-                const parts = dataLine.split(',').map(s => s.trim()).filter(s => s);
-                const [lat, lng, radiusKm] = parts.map(parseFloat);
-
-                if (isNaN(lng) || isNaN(lat) || isNaN(radiusKm)) {
-                    return null;
-                }
-
-                return {
-                    lat: lat,
-                    lng: lng,
-                    radius: radiusKm * 1000,
-                    title: title || `Point ${index + 1}`
-                };
-            })
-            .filter(point => point !== null);
-
-        return points;
-    } catch (error) {
-        console.error(`Error loading ${filename}:`, error);
-        return [];
-    }
+    return await DataLoader.loadCSV(filename, { defaultTitle: true });
 }
 
 /**
- * Parse coordinate input
+ * Parse coordinate input (delegates to CoordUtils)
  */
 function parseCoordinates(input) {
-    const parts = input.trim().split(',').map(p => p.trim());
-    if (parts.length !== 2) return null;
-
-    const lat = parseFloat(parts[0]);
-    const lng = parseFloat(parts[1]);
-
-    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-        return null;
-    }
-
-    return { lat, lng };
+    return CoordUtils.parse(input);
 }
 
 /**
@@ -132,9 +73,9 @@ function calculateCombinationScore(pointA, pointB, target) {
 }
 
 /**
- * Find and rank all combinations
+ * Find and rank all combinations (sync version for small datasets)
  */
-function findBestCombinations(target) {
+function findBestCombinationsSync(target) {
     combinations = [];
 
     pointsA.forEach((pointA, indexA) => {
@@ -158,6 +99,45 @@ function findBestCombinations(target) {
     // Sort by score (ascending - lower is better)
     combinations.sort((a, b) => a.score - b.score);
 
+    return combinations;
+}
+
+/**
+ * Find and rank combinations using Web Worker (for large datasets)
+ */
+async function findBestCombinationsAsync(target, onProgress) {
+    const totalCombos = pointsA.length * pointsB.length;
+    console.log(`Using Web Worker for ${totalCombos.toLocaleString()} combinations...`);
+
+    const result = await GeoWorkerAPI.findBestCombinations(
+        pointsA,
+        pointsB,
+        target,
+        {
+            topN: 1000, // Get top 1000 for display flexibility
+            onProgress
+        }
+    );
+
+    // Convert worker results back to full combination objects
+    combinations = result.results.map(r => {
+        const pointA = pointsA[r.indexA];
+        const pointB = pointsB[r.indexB];
+
+        return {
+            pointA: pointA,
+            pointB: pointB,
+            indexA: r.indexA,
+            indexB: r.indexB,
+            score: r.score,
+            midpoint: r.midpoint,
+            distAtoTarget: GeoCalc.getDistance(pointA, target),
+            distBtoTarget: GeoCalc.getDistance(pointB, target),
+            distAtoB: GeoCalc.getDistance(pointA, pointB)
+        };
+    });
+
+    console.log(`Worker completed in ${(result.elapsed / 1000).toFixed(2)}s`);
     return combinations;
 }
 
@@ -219,7 +199,7 @@ function displayCombinations() {
  * Highlight a combination on the map
  */
 function highlightCombination(combo) {
-    highlightLayer.clearLayers();
+    layers.highlight.clearLayers();
 
     // Draw point A (blue)
     const circleA = L.circle([combo.pointA.lat, combo.pointA.lng], {
@@ -230,18 +210,18 @@ function highlightCombination(combo) {
         weight: 4
     });
     circleA.bindPopup(`<strong>Point A: ${combo.pointA.title}</strong><br>Radius: ${(combo.pointA.radius / 1000).toFixed(0)} km`);
-    circleA.addTo(highlightLayer);
+    circleA.addTo(layers.highlight);
 
     // Draw point B (purple)
     const circleB = L.circle([combo.pointB.lat, combo.pointB.lng], {
         radius: combo.pointB.radius,
-        color: '#9b59b6',
-        fillColor: '#9b59b6',
+        color: MapUtils.colors.purple,
+        fillColor: MapUtils.colors.purple,
         fillOpacity: 0.4,
         weight: 4
     });
     circleB.bindPopup(`<strong>Point B: ${combo.pointB.title}</strong><br>Radius: ${(combo.pointB.radius / 1000).toFixed(0)} km`);
-    circleB.addTo(highlightLayer);
+    circleB.addTo(layers.highlight);
 
     // Draw midpoint (yellow)
     const midpointMarker = L.circleMarker([combo.midpoint.lat, combo.midpoint.lng], {
@@ -261,56 +241,39 @@ function highlightCombination(combo) {
         <br>
         Score: ${GeoCalc.formatDistance(combo.score)} from target<br>
         <br>
-        <a href="${googleMapsUrl}" target="_blank" style="color: #3498db;">📍 Open in Google Maps</a>
+        <a href="${googleMapsUrl}" target="_blank" style="color: #3498db;">Open in Google Maps</a>
     `);
-    midpointMarker.addTo(highlightLayer);
+    midpointMarker.addTo(layers.highlight);
 
     // Draw line A to B
-    const aTurf = turf.point([combo.pointA.lng, combo.pointA.lat]);
-    const bTurf = turf.point([combo.pointB.lng, combo.pointB.lat]);
-    const greatCircle = turf.greatCircle(aTurf, bTurf);
-
-    L.geoJSON(greatCircle, {
-        style: {
-            color: '#95a5a6',
-            weight: 2,
-            opacity: 0.5,
-            dashArray: '5, 5'
-        }
-    }).addTo(highlightLayer);
+    MapUtils.drawGreatCircle(layers.highlight, combo.pointA, combo.pointB);
 }
 
 /**
  * Draw all points on the map
  */
 function drawAllPoints() {
-    pointLayersA.clearLayers();
-    pointLayersB.clearLayers();
+    layers.pointsA.clearLayers();
+    layers.pointsB.clearLayers();
 
     // Draw A points (blue)
     pointsA.forEach((point, index) => {
-        const circle = L.circle([point.lat, point.lng], {
-            radius: point.radius,
-            color: '#3498db',
-            fillColor: '#3498db',
+        MapUtils.drawCircle(layers.pointsA, point, {
+            color: MapUtils.colors.blue,
+            fillColor: MapUtils.colors.blue,
             fillOpacity: 0.1,
             weight: 1
-        });
-        circle.bindPopup(`<strong>A${index + 1}: ${point.title}</strong>`);
-        circle.addTo(pointLayersA);
+        }, `<strong>A${index + 1}: ${point.title}</strong>`);
     });
 
     // Draw B points (purple)
     pointsB.forEach((point, index) => {
-        const circle = L.circle([point.lat, point.lng], {
-            radius: point.radius,
-            color: '#9b59b6',
-            fillColor: '#9b59b6',
+        MapUtils.drawCircle(layers.pointsB, point, {
+            color: MapUtils.colors.purple,
+            fillColor: MapUtils.colors.purple,
             fillOpacity: 0.1,
             weight: 1
-        });
-        circle.bindPopup(`<strong>B${index + 1}: ${point.title}</strong>`);
-        circle.addTo(pointLayersB);
+        }, `<strong>B${index + 1}: ${point.title}</strong>`);
     });
 }
 
@@ -318,26 +281,63 @@ function drawAllPoints() {
  * Draw target point
  */
 function drawTarget(target) {
-    targetLayer.clearLayers();
+    layers.target.clearLayers();
 
-    const marker = L.circleMarker([target.lat, target.lng], {
-        radius: 8,
-        color: '#e74c3c',
-        fillColor: '#e74c3c',
-        fillOpacity: 0.9,
-        weight: 3
-    });
+    MapUtils.drawMarker(layers.target, target, {
+        color: MapUtils.colors.red,
+        fillColor: MapUtils.colors.red,
+        fillOpacity: 0.9
+    }, `<strong>Target</strong><br>Lat: ${target.lat.toFixed(4)}<br>Lng: ${target.lng.toFixed(4)}`);
+}
 
-    marker.bindPopup(`<strong>Target</strong><br>Lat: ${target.lat.toFixed(4)}<br>Lng: ${target.lng.toFixed(4)}`);
-    marker.addTo(targetLayer);
+/**
+ * Show/hide progress indicator
+ */
+function showProgress(show, message = 'Calculating...', percent = null) {
+    let progressEl = document.getElementById('calc-progress');
+
+    if (!progressEl && show) {
+        // Create progress element if it doesn't exist
+        progressEl = document.createElement('div');
+        progressEl.id = 'calc-progress';
+        progressEl.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--secondary-bg);
+            padding: 24px 48px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+            z-index: 10000;
+            text-align: center;
+            min-width: 250px;
+        `;
+        document.body.appendChild(progressEl);
+    }
+
+    if (progressEl) {
+        if (show) {
+            const percentText = percent !== null ? ` (${percent}%)` : '';
+            progressEl.innerHTML = `
+                <div style="font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary);">
+                    ${message}${percentText}
+                </div>
+                <div style="width: 100%; height: 8px; background: var(--accent); border-radius: 4px; overflow: hidden;">
+                    <div style="width: ${percent || 0}%; height: 100%; background: var(--green); transition: width 0.2s;"></div>
+                </div>
+            `;
+            progressEl.style.display = 'block';
+        } else {
+            progressEl.style.display = 'none';
+        }
+    }
 }
 
 /**
  * Main find function
  */
 async function findCombinations() {
-    const fileA = document.getElementById('file-a').value;
-    const fileB = document.getElementById('file-b').value;
     const targetInput = document.getElementById('target-coords').value;
 
     const target = parseCoordinates(targetInput);
@@ -346,15 +346,11 @@ async function findCombinations() {
         return;
     }
 
-    // Load both files
-    pointsA = await loadPoints(fileA);
-    pointsB = await loadPoints(fileB);
-
-    document.getElementById('count-a').textContent = pointsA.length;
-    document.getElementById('count-b').textContent = pointsB.length;
+    // Save target for other pages
+    CoordUtils.saveTarget(targetInput);
 
     if (pointsA.length === 0 || pointsB.length === 0) {
-        alert('Failed to load points from one or both files');
+        alert('Please upload both List A and List B files first');
         return;
     }
 
@@ -362,8 +358,26 @@ async function findCombinations() {
     drawAllPoints();
     drawTarget(target);
 
-    // Find best combinations
-    findBestCombinations(target);
+    // Determine if we should use the worker (threshold: 10,000 combinations)
+    const totalCombos = pointsA.length * pointsB.length;
+    const useWorker = totalCombos >= 10000;
+
+    if (useWorker) {
+        // Show progress for large datasets
+        showProgress(true, 'Calculating combinations...', 0);
+
+        try {
+            await findBestCombinationsAsync(target, (percent) => {
+                showProgress(true, 'Calculating combinations...', percent);
+            });
+        } finally {
+            showProgress(false);
+        }
+    } else {
+        // Use sync version for small datasets
+        findBestCombinationsSync(target);
+    }
+
     displayCombinations();
 
     // Auto-select and highlight the best combination
@@ -594,7 +608,7 @@ function getNeighborKeysWithDistance(key, latStep, lngStep) {
  * Uses FIXED global lat/lng grid to ensure proper alignment
  * Tiles are square in degree-space, varying in physical size with latitude
  */
-function generateHeatmap() {
+async function generateHeatmap() {
     if (pointsA.length === 0 || pointsB.length === 0) {
         alert('Please load both point lists first');
         return;
@@ -604,9 +618,9 @@ function generateHeatmap() {
 
     // Hide other layers for performance
     if (midpointClusterGroup) map.removeLayer(midpointClusterGroup);
-    map.removeLayer(pointLayersA);
-    map.removeLayer(pointLayersB);
-    map.removeLayer(highlightLayer);
+    map.removeLayer(layers.pointsA);
+    map.removeLayer(layers.pointsB);
+    map.removeLayer(layers.highlight);
 
     // Clear existing heatmap
     heatmapLayer.clearLayers();
@@ -614,20 +628,42 @@ function generateHeatmap() {
 
     // STEP 1: Calculate all midpoints if not already cached
     if (allMidpoints.length === 0) {
-        console.log('Step 1: Calculating all midpoints...');
-        pointsA.forEach((pointA) => {
-            pointsB.forEach((pointB) => {
-                const aTurf = turf.point([pointA.lng, pointA.lat]);
-                const bTurf = turf.point([pointB.lng, pointB.lat]);
-                const midpointTurf = turf.midpoint(aTurf, bTurf);
+        const totalCombos = pointsA.length * pointsB.length;
+        const useWorker = totalCombos >= 10000;
 
-                allMidpoints.push({
-                    lat: midpointTurf.geometry.coordinates[1],
-                    lng: midpointTurf.geometry.coordinates[0]
+        if (useWorker) {
+            showProgress(true, 'Calculating midpoints...', 0);
+            try {
+                const result = await GeoWorkerAPI.calculateAllMidpoints(
+                    pointsA,
+                    pointsB,
+                    {
+                        onProgress: (percent) => {
+                            showProgress(true, 'Calculating midpoints...', percent);
+                        }
+                    }
+                );
+                allMidpoints = result.midpoints;
+                console.log(`✓ Worker calculated ${allMidpoints.length} midpoints in ${(result.elapsed / 1000).toFixed(2)}s`);
+            } finally {
+                showProgress(false);
+            }
+        } else {
+            console.log('Step 1: Calculating all midpoints...');
+            pointsA.forEach((pointA) => {
+                pointsB.forEach((pointB) => {
+                    const aTurf = turf.point([pointA.lng, pointA.lat]);
+                    const bTurf = turf.point([pointB.lng, pointB.lat]);
+                    const midpointTurf = turf.midpoint(aTurf, bTurf);
+
+                    allMidpoints.push({
+                        lat: midpointTurf.geometry.coordinates[1],
+                        lng: midpointTurf.geometry.coordinates[0]
+                    });
                 });
             });
-        });
-        console.log(`✓ Calculated ${allMidpoints.length} midpoints`);
+            console.log(`✓ Calculated ${allMidpoints.length} midpoints`);
+        }
     }
 
     // Use FIXED global grid with 100km tiles for performance
@@ -766,16 +802,66 @@ function generateHeatmap() {
 }
 
 /**
- * Load points on startup
+ * Update file display UI
+ */
+function updateFileDisplay(list, filename, count) {
+    const nameEl = document.getElementById(`file-${list}-name`);
+    const statusEl = document.getElementById(`file-${list}-status`);
+
+    if (filename && count > 0) {
+        nameEl.textContent = filename;
+        statusEl.textContent = `${count} points loaded`;
+    } else if (filename) {
+        nameEl.textContent = filename;
+        statusEl.textContent = 'No valid points';
+    } else {
+        nameEl.textContent = 'No file loaded';
+        statusEl.textContent = `Click to upload List ${list.toUpperCase()}`;
+    }
+}
+
+/**
+ * Handle file upload for List A
+ */
+function handleFileAUpload(event) {
+    DataLoader.handleFileInput(event, 'finder_list_a', (points, filename) => {
+        pointsA = points;
+        allMidpoints = []; // Clear cache when data changes
+        combinations = [];
+        updateFileDisplay('a', filename, points.length);
+        document.getElementById('count-a').textContent = points.length;
+        drawAllPoints();
+    }, { defaultTitle: true });
+}
+
+/**
+ * Handle file upload for List B
+ */
+function handleFileBUpload(event) {
+    DataLoader.handleFileInput(event, 'finder_list_b', (points, filename) => {
+        pointsB = points;
+        allMidpoints = []; // Clear cache when data changes
+        combinations = [];
+        updateFileDisplay('b', filename, points.length);
+        document.getElementById('count-b').textContent = points.length;
+        drawAllPoints();
+    }, { defaultTitle: true });
+}
+
+/**
+ * Load points on startup from storage
  */
 async function loadInitialPoints() {
-    const fileA = document.getElementById('file-a').value;
-    const fileB = document.getElementById('file-b').value;
-
-    pointsA = await loadPoints(fileA);
-    pointsB = await loadPoints(fileB);
-
+    // Load List A from storage
+    const resultA = await DataLoader.loadWithFallback('finder_list_a', null, { defaultTitle: true });
+    pointsA = resultA.points;
+    updateFileDisplay('a', resultA.filename, pointsA.length);
     document.getElementById('count-a').textContent = pointsA.length;
+
+    // Load List B from storage
+    const resultB = await DataLoader.loadWithFallback('finder_list_b', null, { defaultTitle: true });
+    pointsB = resultB.points;
+    updateFileDisplay('b', resultB.filename, pointsB.length);
     document.getElementById('count-b').textContent = pointsB.length;
 
     // Draw all points on the map
@@ -814,10 +900,24 @@ function loadFromUrlHash() {
  * Initialize application
  */
 async function init() {
+    // Render navigation
+    NavUtils.render('site-nav', 'finder');
+
     initMap();
 
     // Load both point lists on startup
     await loadInitialPoints();
+
+    // File upload handlers
+    document.getElementById('file-a-btn').addEventListener('click', () => {
+        document.getElementById('file-a').click();
+    });
+    document.getElementById('file-a').addEventListener('change', handleFileAUpload);
+
+    document.getElementById('file-b-btn').addEventListener('click', () => {
+        document.getElementById('file-b').click();
+    });
+    document.getElementById('file-b').addEventListener('change', handleFileBUpload);
 
     document.getElementById('find-btn').addEventListener('click', findCombinations);
 
@@ -836,8 +936,13 @@ async function init() {
     // Show heatmap button
     document.getElementById('show-heatmap-btn').addEventListener('click', generateHeatmap);
 
-    // Load from URL hash if present
-    loadFromUrlHash();
+    // Load from URL hash if present, otherwise load saved target
+    if (!loadFromUrlHash()) {
+        const savedTarget = CoordUtils.loadTarget();
+        if (savedTarget) {
+            document.getElementById('target-coords').value = savedTarget;
+        }
+    }
 }
 
 // Start when DOM is ready

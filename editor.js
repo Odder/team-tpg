@@ -10,28 +10,15 @@ let draggedPointIndex = null;
 
 // Map and layers
 let map = null;
-let pointLayers = L.layerGroup();
+let layers = {};
 
 /**
  * Initialize the map
  */
 function initMap() {
-    map = L.map('map', {
-        center: [20, 0],
-        zoom: 2,
-        minZoom: 2,
-        maxZoom: 18
-    });
-
-    // Add tile layer
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
-    }).addTo(map);
-
-    // Add layer group
-    pointLayers.addTo(map);
+    map = MapUtils.createMap('map');
+    layers = MapUtils.createLayers(map, ['points']);
+    MapUtils.addContextMenu(map);
 
     // Map click handler
     map.on('click', handleMapClick);
@@ -50,8 +37,9 @@ function handleMapClick(e) {
             [point.lat, point.lng]
         );
 
-        // Check if click is within the circle's radius
-        if (distance <= point.radius * 1000) {
+        // Check if click is within the circle's radius (radius is in km for editor)
+        const radiusMeters = (point.radiusKm || point.radius) * 1000;
+        if (distance <= radiusMeters) {
             clickedPointIndex = index;
         }
     });
@@ -65,7 +53,8 @@ function handleMapClick(e) {
         const newPoint = {
             lat: e.latlng.lat,
             lng: e.latlng.lng,
-            radius: 5, // Default 5km
+            radius: 5,    // Default 5km (editor uses km)
+            radiusKm: 5,  // Explicit km value
             title: null
         };
 
@@ -135,6 +124,7 @@ function savePoint() {
     const name = nameInput.value.trim() || null;
 
     points[selectedPointIndex].radius = radius;
+    points[selectedPointIndex].radiusKm = radius;
     points[selectedPointIndex].title = name;
 
     renderPoints();
@@ -190,16 +180,16 @@ function deselectAllPoints() {
  * Render all points on the map
  */
 function renderPoints() {
-    pointLayers.clearLayers();
+    layers.points.clearLayers();
 
     points.forEach((point, index) => {
         const isSelected = index === selectedPointIndex;
 
-        // Create circle
+        // Create circle with radius in meters (point.radius is in km for editor)
         const circle = L.circle([point.lat, point.lng], {
-            radius: point.radius * 1000, // Convert km to meters
-            color: isSelected ? '#f39c12' : '#3498db',
-            fillColor: isSelected ? '#f39c12' : '#3498db',
+            radius: (point.radiusKm || point.radius) * 1000, // Convert km to meters
+            color: isSelected ? MapUtils.colors.orange : MapUtils.colors.blue,
+            fillColor: isSelected ? MapUtils.colors.orange : MapUtils.colors.blue,
             fillOpacity: isSelected ? 0.3 : 0.15,
             weight: isSelected ? 3 : 2
         });
@@ -209,7 +199,7 @@ function renderPoints() {
             <strong>${point.title || `Point ${index + 1}`}</strong><br>
             Lat: ${point.lat.toFixed(6)}<br>
             Lng: ${point.lng.toFixed(6)}<br>
-            Radius: ${point.radius} km
+            Radius: ${point.radiusKm || point.radius} km
         `;
         circle.bindPopup(popupContent);
 
@@ -231,7 +221,7 @@ function renderPoints() {
             }
         });
 
-        circle.addTo(pointLayers);
+        circle.addTo(layers.points);
     });
 }
 
@@ -267,7 +257,7 @@ function updatePointList() {
 
         const coords = document.createElement('div');
         coords.className = 'point-item-coords';
-        coords.textContent = `${point.lat.toFixed(4)}, ${point.lng.toFixed(4)} - ${point.radius}km`;
+        coords.textContent = `${point.lat.toFixed(4)}, ${point.lng.toFixed(4)} - ${point.radiusKm || point.radius}km`;
 
         info.appendChild(name);
         info.appendChild(coords);
@@ -295,72 +285,38 @@ function exportData() {
         return;
     }
 
-    // Generate CSV content (format: lat,lng,radius,"title")
-    const lines = points.map(point => {
-        const title = point.title ? `,"${point.title}"` : '';
-        return `${point.lat},${point.lng},${point.radius}${title}`;
-    });
+    // Use DataLoader to export (points have radiusKm)
+    const exportPoints = points.map(p => ({
+        lat: p.lat,
+        lng: p.lng,
+        radiusKm: p.radiusKm || p.radius,
+        title: p.title
+    }));
 
-    const csvContent = lines.join('\n') + '\n';
-
-    // Create download link
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'cellery-list';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    DataLoader.downloadCSV(exportPoints, 'cellery-list.csv');
 }
 
 /**
  * Import data from file
  */
 function importData(fileContent) {
-    const lines = fileContent
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 0);
-
-    const newPoints = [];
-
-    lines.forEach((line, index) => {
-        // Check if line has a title (contains quoted text)
-        const titleMatch = line.match(/"([^"]+)"/);
-        const title = titleMatch ? titleMatch[1] : null;
-
-        // Remove title from line for easier parsing
-        const dataLine = title ? line.replace(/"[^"]+"/, '').trim() : line;
-
-        // Parse lat,lng,radius_km
-        const parts = dataLine.split(',').map(s => s.trim()).filter(s => s);
-        const [lat, lng, radiusKm] = parts.map(parseFloat);
-
-        if (isNaN(lng) || isNaN(lat) || isNaN(radiusKm)) {
-            console.warn(`Skipping invalid line ${index + 1}: ${line}`);
-            return;
-        }
-
-        newPoints.push({
-            lat: lat,
-            lng: lng,
-            radius: radiusKm,
-            title: title
-        });
-    });
+    const newPoints = DataLoader.parseCSV(fileContent);
 
     if (newPoints.length > 0) {
-        points = newPoints;
+        // Convert to editor format (radiusKm stored in radius field for editor)
+        points = newPoints.map(p => ({
+            lat: p.lat,
+            lng: p.lng,
+            radius: p.radiusKm,  // Editor uses km directly
+            radiusKm: p.radiusKm,
+            title: p.title
+        }));
+
         renderPoints();
         updatePointList();
 
         // Fit map to show all points
-        if (points.length > 0) {
-            const bounds = L.latLngBounds(points.map(p => [p.lat, p.lng]));
-            map.fitBounds(bounds, { padding: [50, 50] });
-        }
+        MapUtils.fitToPoints(map, points);
     }
 }
 
@@ -467,6 +423,9 @@ function setupDragging() {
  * Initialize the application
  */
 function init() {
+    // Render navigation
+    NavUtils.render('site-nav', 'editor');
+
     // Initialize map
     initMap();
 
