@@ -1,2 +1,5 @@
 .idea
 *.md
+!README.md
+# Local Netlify folder
+.netlify
