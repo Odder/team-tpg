@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Comparison</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .teams-container {
+            max-height: calc(100vh - 280px);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .team-card {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 16px;
+            border-left: 4px solid transparent;
+        }
+
+        .team-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .team-color-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .team-name {
+            flex: 1;
+            font-weight: 600;
+            font-size: 15px;
+            color: var(--text-primary);
+        }
+
+        .team-remove-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 18px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+
+        .team-remove-btn:hover {
+            background: var(--red);
+            color: white;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .team-files {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .team-file-box {
+            background: var(--primary-bg);
+            border-radius: 6px;
+            padding: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .team-file-box .file-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            width: 20px;
+            flex-shrink: 0;
+        }
+
+        .team-file-box .file-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .team-file-box .file-name {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .team-file-box .file-status {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .team-file-box .upload-btn {
+            padding: 4px 8px;
+            font-size: 10px;
+            background: var(--secondary-bg);
+            flex-shrink: 0;
+        }
+
+        .team-file-box input[type="file"] {
+            display: none;
+        }
+
+        .team-stats {
+            margin-top: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .add-team-btn {
+            width: 100%;
+            background: var(--accent);
+            color: var(--text-primary);
+            border: 2px dashed var(--text-secondary);
+            padding: 16px;
+            font-size: 14px;
+        }
+
+        .add-team-btn:hover {
+            border-color: var(--blue);
+            color: var(--blue);
+            background: var(--primary-bg);
+        }
+
+        .generate-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #e74c3c, #3498db, #2ecc71);
+            font-size: 14px;
+        }
+
+        .generate-btn:hover {
+            background: linear-gradient(135deg, #c0392b, #2980b9, #27ae60);
+        }
+
+        .stats {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .stats div {
+            margin-bottom: 4px;
+        }
+
+        .stats div:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+        }
+
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 32px 16px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state p {
+            margin-bottom: 16px;
+        }
+
+        /* Leaderboard styles */
+        .leaderboard {
+            background: var(--accent);
+            border-radius: 8px;
+            padding: 12px;
+            display: none;
+        }
+
+        .leaderboard.active {
+            display: block;
+        }
+
+        .leaderboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .leaderboard-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .leaderboard-coords {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .leaderboard-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 16px;
+            padding: 2px 6px;
+        }
+
+        .leaderboard-close:hover {
+            color: var(--red);
+            transform: none;
+            box-shadow: none;
+        }
+
+        .leaderboard-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .leaderboard-item {
+            padding: 10px;
+            margin-bottom: 6px;
+            background: var(--primary-bg);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border-left: 4px solid transparent;
+        }
+
+        .leaderboard-item:hover {
+            background: var(--secondary-bg);
+            transform: translateX(2px);
+        }
+
+        .leaderboard-item.selected {
+            background: var(--secondary-bg);
+            border-left-color: var(--green);
+        }
+
+        .leaderboard-item-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .leaderboard-rank {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 24px;
+            font-weight: bold;
+            font-size: 12px;
+            color: white;
+        }
+
+        .leaderboard-team-name {
+            font-weight: 600;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .leaderboard-score {
+            margin-left: auto;
+            color: var(--green);
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .leaderboard-details {
+            font-size: 11px;
+            color: var(--text-secondary);
+            padding-left: 32px;
+        }
+
+        .leaderboard-details div {
+            margin-bottom: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <nav class="site-nav" id="site-nav"></nav>
+
+            <h1>Team Comparison</h1>
+
+            <!-- Teams Container -->
+            <div class="input-group">
+                <label>Teams</label>
+                <div class="teams-container" id="teams-container"></div>
+                <button class="add-team-btn" id="add-team-btn">+ Add Team</button>
+            </div>
+
+            <!-- Generate Button -->
+            <div class="input-group">
+                <button class="generate-btn" id="generate-btn">Generate Comparison Map</button>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
+                    Shows Voronoi regions colored by winning team
+                </small>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats" id="stats">
+                <div><strong>Teams:</strong> <span id="count-teams">0</span></div>
+                <div><strong>Total Midpoints:</strong> <span id="count-midpoints">0</span></div>
+                <div class="legend" id="legend"></div>
+            </div>
+
+            <!-- Coverage Stats (shown after generating map) -->
+            <div class="stats" id="coverage-stats" style="display: none;">
+                <div style="font-weight: 600; margin-bottom: 8px;">Coverage Statistics</div>
+                <div id="coverage-list"></div>
+            </div>
+
+            <!-- Leaderboard (shown on right-click) -->
+            <div class="leaderboard" id="leaderboard">
+                <div class="leaderboard-header">
+                    <div>
+                        <div class="leaderboard-title">Leaderboard at Location</div>
+                        <div class="leaderboard-coords" id="leaderboard-coords"></div>
+                    </div>
+                    <button class="leaderboard-close" id="leaderboard-close">&times;</button>
+                </div>
+                <div class="leaderboard-list" id="leaderboard-list"></div>
+            </div>
+        </div>
+
+        <!-- Map Container -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+
+    <!-- Turf.js for geodesic calculations -->
+    <script src="https://unpkg.com/@turf/turf@7.1.0/turf.min.js"></script>
+
+    <!-- d3-delaunay for Voronoi -->
+    <script src="https://unpkg.com/d3-delaunay@6/dist/d3-delaunay.min.js"></script>
+
+    <!-- Shared utilities -->
+    <script src="lib/coord-utils.js"></script>
+    <script src="lib/data-loader.js"></script>
+    <script src="lib/map-utils.js"></script>
+    <script src="lib/nav-utils.js"></script>
+    <script src="lib/midpoint-cache.js"></script>
+    <script src="lib/spatial-index.js"></script>
+
+    <!-- Custom JS -->
+    <script src="compare.js"></script>
+</body>
+</html>

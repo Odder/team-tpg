@@ -14,6 +14,8 @@ let layers = {};
 let midpointClusterGroup = null;
 let rawMidpointLayer = L.layerGroup();
 let heatmapLayer = L.layerGroup();
+let heatmapV2Layer = null;
+let midpointSpatialIndex = null;
 let allMidpoints = []; // Cache for all calculated midpoints
 
 /**
@@ -618,6 +620,10 @@ async function generateHeatmap() {
 
     // Hide other layers for performance
     if (midpointClusterGroup) map.removeLayer(midpointClusterGroup);
+    if (heatmapV2Layer) {
+        map.removeLayer(heatmapV2Layer);
+        heatmapV2Layer = null;
+    }
     map.removeLayer(layers.pointsA);
     map.removeLayer(layers.pointsB);
     map.removeLayer(layers.highlight);
@@ -801,6 +807,449 @@ async function generateHeatmap() {
     alert(`Heatmap generated!\n\n${renderedCount} tiles rendered (100×100km each)\n\nGreen: midpoint inside\nYellow: <100km\nOrange: <250km\nRed: <400km`);
 }
 
+// ============================================================
+// NEW HEATMAP V2 - Canvas-based with smooth gradient
+// Pre-computed distance field + bilinear interpolation
+// ============================================================
+
+// Distance field storage
+let distanceField = null;
+let distanceFieldMeta = null;
+
+/**
+ * Fast haversine distance calculation (km)
+ */
+function haversineDistanceFast(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Build a pre-computed distance field grid
+ * Resolution: ~25km cells (0.25 degrees)
+ * Returns a Promise to allow async progress updates
+ */
+function buildDistanceField(midpoints, resolution = 0.25, onProgress = null) {
+    return new Promise((resolve) => {
+        const latMin = -85, latMax = 85;
+        const lngMin = -180, lngMax = 180;
+
+        const latCells = Math.ceil((latMax - latMin) / resolution);
+        const lngCells = Math.ceil((lngMax - lngMin) / resolution);
+
+        console.log(`Building distance field: ${latCells}x${lngCells} = ${latCells * lngCells} cells`);
+
+        // Create typed array for distances (much faster than regular array)
+        const field = new Float32Array(latCells * lngCells);
+        field.fill(Infinity);
+
+        // First pass: mark cells containing midpoints as 0
+        midpoints.forEach(mp => {
+            if (mp.lat < latMin || mp.lat > latMax) return;
+
+            const latIdx = Math.floor((mp.lat - latMin) / resolution);
+            const lngIdx = Math.floor(((mp.lng + 180) % 360 - 180 - lngMin) / resolution);
+
+            if (latIdx >= 0 && latIdx < latCells && lngIdx >= 0 && lngIdx < lngCells) {
+                const idx = latIdx * lngCells + lngIdx;
+                field[idx] = 0;
+            }
+        });
+
+        // Build spatial index for fast nearest-neighbor during field computation
+        const cellSize = 2; // degrees
+        const spatialIndex = new Map();
+        midpoints.forEach((mp, i) => {
+            const key = `${Math.floor(mp.lat / cellSize)},${Math.floor(mp.lng / cellSize)}`;
+            if (!spatialIndex.has(key)) spatialIndex.set(key, []);
+            spatialIndex.get(key).push(i);
+        });
+
+        // Second pass: compute distances for all cells (chunked for progress)
+        const maxSearchDist = 1600; // km (a bit beyond 1500 for safety)
+        const maxSearchDegLat = maxSearchDist / 111 + 1;
+
+        let currentLatIdx = 0;
+        const chunkSize = 10; // Process 10 rows per chunk
+
+        function processChunk() {
+            const endLatIdx = Math.min(currentLatIdx + chunkSize, latCells);
+
+            for (let latIdx = currentLatIdx; latIdx < endLatIdx; latIdx++) {
+                const lat = latMin + (latIdx + 0.5) * resolution;
+
+                // Adjust longitude search radius based on latitude
+                // At higher latitudes, need to search more longitude cells
+                const cosLat = Math.cos(Math.abs(lat) * Math.PI / 180);
+                const maxSearchDegLng = cosLat > 0.1 ? maxSearchDegLat / cosLat : 180;
+                const searchRadiusLat = Math.ceil(maxSearchDegLat / cellSize);
+                const searchRadiusLng = Math.min(Math.ceil(maxSearchDegLng / cellSize), 90); // Cap at 180 degrees
+
+                for (let lngIdx = 0; lngIdx < lngCells; lngIdx++) {
+                    const idx = latIdx * lngCells + lngIdx;
+
+                    // Skip cells that already have midpoints
+                    if (field[idx] === 0) continue;
+
+                    const lng = lngMin + (lngIdx + 0.5) * resolution;
+
+                    // Search nearby cells in spatial index
+                    const centerCellLat = Math.floor(lat / cellSize);
+                    const centerCellLng = Math.floor(lng / cellSize);
+
+                    let minDist = Infinity;
+
+                    for (let dLat = -searchRadiusLat; dLat <= searchRadiusLat && minDist > 50; dLat++) {
+                        for (let dLng = -searchRadiusLng; dLng <= searchRadiusLng; dLng++) {
+                            // Handle antimeridian wrapping for longitude
+                            let cellLng = centerCellLng + dLng;
+                            // Wrap longitude cells (assuming 2-degree cells, 180 cells for 360 degrees)
+                            const maxLngCells = Math.ceil(360 / cellSize);
+                            if (cellLng < -maxLngCells / 2) cellLng += maxLngCells;
+                            if (cellLng >= maxLngCells / 2) cellLng -= maxLngCells;
+
+                            const key = `${centerCellLat + dLat},${cellLng}`;
+                            const cellMps = spatialIndex.get(key);
+
+                            if (cellMps) {
+                                for (const mpIdx of cellMps) {
+                                    const mp = midpoints[mpIdx];
+                                    const dist = haversineDistanceFast(lat, lng, mp.lat, mp.lng);
+                                    if (dist < minDist) minDist = dist;
+                                }
+                            }
+                        }
+                    }
+
+                    field[idx] = Math.min(minDist, maxSearchDist);
+                }
+            }
+
+            currentLatIdx = endLatIdx;
+
+            // Report progress
+            if (onProgress) {
+                const percent = Math.round((currentLatIdx / latCells) * 100);
+                onProgress(percent);
+            }
+
+            if (currentLatIdx < latCells) {
+                // Continue with next chunk (yield to event loop)
+                setTimeout(processChunk, 0);
+            } else {
+                // Done - log stats and resolve with the field
+                let zeros = 0, finite = 0, infinite = 0;
+                for (let i = 0; i < field.length; i++) {
+                    if (field[i] === 0) zeros++;
+                    else if (field[i] < 10000) finite++;
+                    else infinite++;
+                }
+                console.log(`Distance field stats: zeros=${zeros}, finite=${finite}, infinite=${infinite}`);
+
+                resolve({
+                    field,
+                    latMin,
+                    latMax,
+                    lngMin,
+                    lngMax,
+                    latCells,
+                    lngCells,
+                    resolution
+                });
+            }
+        }
+
+        // Start processing
+        processChunk();
+    });
+}
+
+/**
+ * Sample distance from pre-computed field with bilinear interpolation
+ * Handles antimeridian wrapping for longitude
+ */
+function sampleDistanceField(lat, lng, meta) {
+    const { field, latMin, latMax, lngMin, lngMax, latCells, lngCells, resolution } = meta;
+
+    // Clamp to valid range
+    if (lat < latMin || lat > latMax) return Infinity;
+
+    // Normalize longitude to -180 to 180
+    lng = ((lng + 180) % 360 + 360) % 360 - 180;
+
+    // Get floating point cell coordinates
+    const latF = (lat - latMin) / resolution - 0.5;
+    const lngF = (lng - lngMin) / resolution - 0.5;
+
+    // Get integer cell indices
+    const latIdx0 = Math.floor(latF);
+    const latIdx1 = latIdx0 + 1;
+    let lngIdx0 = Math.floor(lngF);
+    let lngIdx1 = lngIdx0 + 1;
+
+    // Get interpolation weights
+    const latT = latF - latIdx0;
+    const lngT = lngF - lngIdx0;
+
+    // Clamp latitude indices
+    const lat0 = Math.max(0, Math.min(latCells - 1, latIdx0));
+    const lat1 = Math.max(0, Math.min(latCells - 1, latIdx1));
+
+    // Wrap longitude indices (for antimeridian)
+    const lng0 = ((lngIdx0 % lngCells) + lngCells) % lngCells;
+    const lng1 = ((lngIdx1 % lngCells) + lngCells) % lngCells;
+
+    // Sample four corners
+    const d00 = field[lat0 * lngCells + lng0];
+    const d01 = field[lat0 * lngCells + lng1];
+    const d10 = field[lat1 * lngCells + lng0];
+    const d11 = field[lat1 * lngCells + lng1];
+
+    // Bilinear interpolation
+    const d0 = d00 * (1 - lngT) + d01 * lngT;
+    const d1 = d10 * (1 - lngT) + d11 * lngT;
+
+    return d0 * (1 - latT) + d1 * latT;
+}
+
+/**
+ * Convert distance to color
+ * Green @40% (center) -> Yellow @40% (~150km) -> Red @40% (~750km) -> Red @0% (~1500km)
+ * Returns [r, g, b, a] array
+ */
+function distanceToColor(distKm) {
+    const YELLOW_DIST = 75;
+    const RED_DIST = 500;
+    const MAX_DIST = 1000;
+    const BASE_OPACITY = 102; // 0-255, ~40% opacity
+
+    // Colors
+    const GREEN = [46, 204, 113];   // #2ecc71
+    const YELLOW = [241, 196, 15];  // #f1c40f
+    const RED = [231, 76, 60];      // #e74c3c
+
+    if (distKm > MAX_DIST) {
+        return [0, 0, 0, 0]; // Transparent
+    }
+
+    let r, g, b, opacity;
+
+    if (distKm <= YELLOW_DIST) {
+        // Green to Yellow (0 -> 150km)
+        const t = distKm / YELLOW_DIST;
+        r = Math.round(GREEN[0] + (YELLOW[0] - GREEN[0]) * t);
+        g = Math.round(GREEN[1] + (YELLOW[1] - GREEN[1]) * t);
+        b = Math.round(GREEN[2] + (YELLOW[2] - GREEN[2]) * t);
+        opacity = BASE_OPACITY;
+    } else if (distKm <= RED_DIST) {
+        // Yellow to Red (150 -> 750km)
+        const t = (distKm - YELLOW_DIST) / (RED_DIST - YELLOW_DIST);
+        r = Math.round(YELLOW[0] + (RED[0] - YELLOW[0]) * t);
+        g = Math.round(YELLOW[1] + (RED[1] - YELLOW[1]) * t);
+        b = Math.round(YELLOW[2] + (RED[2] - YELLOW[2]) * t);
+        opacity = BASE_OPACITY;
+    } else {
+        // Red, fading opacity (750 -> 1500km)
+        const t = (distKm - RED_DIST) / (MAX_DIST - RED_DIST);
+        r = RED[0];
+        g = RED[1];
+        b = RED[2];
+        opacity = Math.round(BASE_OPACITY * (1 - t));
+    }
+
+    return [r, g, b, opacity];
+}
+
+/**
+ * Custom Leaflet GridLayer for heatmap rendering
+ * Uses pre-computed distance field with bilinear interpolation
+ */
+function createHeatmapGridLayer(fieldMeta) {
+    const HeatmapGridLayer = L.GridLayer.extend({
+        options: {
+            fieldMeta: null
+        },
+
+        initialize: function(options) {
+            L.GridLayer.prototype.initialize.call(this, options);
+            console.log('HeatmapGridLayer initialized, fieldMeta:', !!this.options.fieldMeta);
+        },
+
+        createTile: function(coords) {
+            const tile = document.createElement('canvas');
+            const tileSize = this.getTileSize();
+            tile.width = tileSize.x;
+            tile.height = tileSize.y;
+
+            const ctx = tile.getContext('2d');
+            const imageData = ctx.createImageData(tileSize.x, tileSize.y);
+            const data = imageData.data;
+
+            const meta = this.options.fieldMeta;
+            if (!meta || !meta.field) {
+                console.error('No fieldMeta in tile options:', meta);
+                return tile;
+            }
+
+            // Get tile bounds in lat/lng
+            const nwPoint = coords.scaleBy(tileSize);
+            const zoom = coords.z;
+            const nw = this._map.unproject(nwPoint, zoom);
+            const se = this._map.unproject(nwPoint.add(tileSize), zoom);
+
+            const latStep = (nw.lat - se.lat) / tileSize.y;
+            const lngStep = (se.lng - nw.lng) / tileSize.x;
+
+            // Render every pixel - bilinear interpolation makes this smooth
+            // and pre-computed field makes this fast
+            let coloredPixels = 0;
+            let minDist = Infinity, maxDist = 0;
+
+            for (let y = 0; y < tileSize.y; y++) {
+                const lat = nw.lat - y * latStep;
+
+                for (let x = 0; x < tileSize.x; x++) {
+                    const lng = nw.lng + x * lngStep;
+
+                    const dist = sampleDistanceField(lat, lng, meta);
+                    const color = distanceToColor(dist);
+
+                    if (dist < minDist) minDist = dist;
+                    if (dist < 10000 && dist > maxDist) maxDist = dist;
+
+                    const idx = (y * tileSize.x + x) * 4;
+                    data[idx] = color[0];
+                    data[idx + 1] = color[1];
+                    data[idx + 2] = color[2];
+                    data[idx + 3] = color[3];
+
+                    if (color[3] > 0) coloredPixels++;
+                }
+            }
+
+            // Debug first few tiles
+            if (!this._debuggedTiles) this._debuggedTiles = 0;
+            if (this._debuggedTiles < 3) {
+                console.log(`Tile ${coords.x},${coords.y},${coords.z}: colored=${coloredPixels}, dist range=${minDist.toFixed(0)}-${maxDist.toFixed(0)}km`);
+                this._debuggedTiles++;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            return tile;
+        }
+    });
+
+    return HeatmapGridLayer;
+}
+
+/**
+ * Generate heatmap V2 - Canvas-based with smooth gradient
+ * Green (<50km) -> Yellow (~224km) -> Red (>1000km)
+ * Logarithmic scale, pre-computed distance field
+ */
+async function generateHeatmapV2() {
+    if (pointsA.length === 0 || pointsB.length === 0) {
+        alert('Please load both point lists first');
+        return;
+    }
+
+    console.time('Heatmap V2 Generation');
+    console.log('Starting Heatmap V2 generation...');
+
+    // Remove existing heatmap layers and hide other markers
+    if (heatmapV2Layer) {
+        map.removeLayer(heatmapV2Layer);
+        heatmapV2Layer = null;
+    }
+    if (midpointClusterGroup) map.removeLayer(midpointClusterGroup);
+    if (map.hasLayer(heatmapLayer)) map.removeLayer(heatmapLayer);
+    if (map.hasLayer(rawMidpointLayer)) map.removeLayer(rawMidpointLayer);
+
+    // Hide point layers for cleaner view
+    if (map.hasLayer(layers.pointsA)) map.removeLayer(layers.pointsA);
+    if (map.hasLayer(layers.pointsB)) map.removeLayer(layers.pointsB);
+    if (map.hasLayer(layers.highlight)) map.removeLayer(layers.highlight);
+    if (map.hasLayer(layers.target)) map.removeLayer(layers.target);
+
+    // STEP 1: Calculate all midpoints if not cached
+    if (allMidpoints.length === 0) {
+        const totalCombos = pointsA.length * pointsB.length;
+        const useWorker = totalCombos >= 10000;
+
+        if (useWorker) {
+            showProgress(true, 'Calculating midpoints...', 0);
+            try {
+                const result = await GeoWorkerAPI.calculateAllMidpoints(
+                    pointsA,
+                    pointsB,
+                    {
+                        onProgress: (percent) => {
+                            showProgress(true, 'Calculating midpoints...', percent);
+                        }
+                    }
+                );
+                allMidpoints = result.midpoints;
+                console.log(`✓ Worker calculated ${allMidpoints.length} midpoints in ${(result.elapsed / 1000).toFixed(2)}s`);
+            } finally {
+                showProgress(false);
+            }
+        } else {
+            console.log('Calculating midpoints (sync)...');
+            pointsA.forEach((pointA) => {
+                pointsB.forEach((pointB) => {
+                    const aTurf = turf.point([pointA.lng, pointA.lat]);
+                    const bTurf = turf.point([pointB.lng, pointB.lat]);
+                    const midpointTurf = turf.midpoint(aTurf, bTurf);
+                    allMidpoints.push({
+                        lat: midpointTurf.geometry.coordinates[1],
+                        lng: midpointTurf.geometry.coordinates[0]
+                    });
+                });
+            });
+            console.log(`✓ Calculated ${allMidpoints.length} midpoints`);
+        }
+    }
+
+    // STEP 2: Build distance field (or use cached)
+    if (!distanceField || !distanceFieldMeta) {
+        console.log('Building distance field...');
+        showProgress(true, 'Building distance field...', 0);
+
+        distanceFieldMeta = await buildDistanceField(allMidpoints, 0.2, (percent) => {
+            showProgress(true, 'Building distance field...', percent);
+        });
+        distanceField = distanceFieldMeta.field;
+        console.log(`✓ Distance field built: ${distanceFieldMeta.latCells}x${distanceFieldMeta.lngCells}`);
+    }
+
+    // STEP 3: Create and add the canvas layer
+    console.log('Creating heatmap layer...');
+    showProgress(true, 'Rendering heatmap...', 100);
+
+    const HeatmapLayer = createHeatmapGridLayer(distanceFieldMeta);
+    heatmapV2Layer = new HeatmapLayer({
+        fieldMeta: distanceFieldMeta,
+        tileSize: 256,
+        opacity: 1,
+        updateWhenZooming: false,
+        updateWhenIdle: true,
+        keepBuffer: 4
+    });
+
+    heatmapV2Layer.addTo(map);
+    console.log('✓ Heatmap layer added to map');
+
+    showProgress(false);
+    console.timeEnd('Heatmap V2 Generation');
+
+    alert(`Heatmap V2 generated!\n\n${allMidpoints.length} midpoints\nDistance field: ${distanceFieldMeta.latCells}x${distanceFieldMeta.lngCells}\n\nGreen: <50km\nYellow: ~224km\nRed: >1000km`);
+}
+
 /**
  * Update file display UI
  */
@@ -827,6 +1276,8 @@ function handleFileAUpload(event) {
     DataLoader.handleFileInput(event, 'finder_list_a', (points, filename) => {
         pointsA = points;
         allMidpoints = []; // Clear cache when data changes
+        distanceField = null; // Clear distance field cache
+        distanceFieldMeta = null;
         combinations = [];
         updateFileDisplay('a', filename, points.length);
         document.getElementById('count-a').textContent = points.length;
@@ -841,6 +1292,8 @@ function handleFileBUpload(event) {
     DataLoader.handleFileInput(event, 'finder_list_b', (points, filename) => {
         pointsB = points;
         allMidpoints = []; // Clear cache when data changes
+        distanceField = null; // Clear distance field cache
+        distanceFieldMeta = null;
         combinations = [];
         updateFileDisplay('b', filename, points.length);
         document.getElementById('count-b').textContent = points.length;
@@ -935,6 +1388,9 @@ async function init() {
 
     // Show heatmap button
     document.getElementById('show-heatmap-btn').addEventListener('click', generateHeatmap);
+
+    // Show heatmap V2 button
+    document.getElementById('show-heatmap-v2-btn').addEventListener('click', generateHeatmapV2);
 
     // Load from URL hash if present, otherwise load saved target
     if (!loadFromUrlHash()) {

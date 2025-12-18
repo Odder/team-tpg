@@ -240,6 +240,16 @@
                     50×50km tile heatmap: Green=inside, Yellow<100km, Orange<250km, Red<500km, Grey>500km
                 </small>
             </div>
+
+            <!-- Heatmap V2 - Smooth Gradient -->
+            <div class="input-group">
+                <button id="show-heatmap-v2-btn" style="background: linear-gradient(90deg, #2ecc71, #f1c40f, #e74c3c); color: white; font-weight: bold;">
+                    Generate Heatmap V2 (Gradient)
+                </button>
+                <small style="color: var(--text-secondary); display: block; margin-top: 8px;">
+                    Smooth gradient: Green &lt;50km → Yellow ~224km → Red &gt;1000km (logarithmic scale)
+                </small>
+            </div>
         </div>
 
         <!-- Map Container -->

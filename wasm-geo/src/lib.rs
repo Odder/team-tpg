@@ -161,3 +161,162 @@ pub fn calculate_all_midpoints(
 pub fn get_combination_count(num_a: usize, num_b: usize) -> usize {
     num_a * num_b
 }
+
+/// Build a distance field grid for heatmap rendering
+///
+/// Input: midpoints as flat array [lat0, lon0, lat1, lon1, ...]
+/// Output: Float32Array of distances for the entire grid (row-major order)
+///
+/// Grid covers lat -85 to 85, lng -180 to 180 at given resolution
+#[wasm_bindgen]
+pub fn build_distance_field(
+    midpoints: &[f64],
+    resolution: f64,
+) -> Vec<f32> {
+    let lat_min: f64 = -85.0;
+    let lat_max: f64 = 85.0;
+    let lng_min: f64 = -180.0;
+    let lng_max: f64 = 180.0;
+
+    let lat_cells = ((lat_max - lat_min) / resolution).ceil() as usize;
+    let lng_cells = ((lng_max - lng_min) / resolution).ceil() as usize;
+
+    let num_midpoints = midpoints.len() / 2;
+    let max_search_dist: f32 = 1600.0; // km
+
+    // Build spatial index with smaller cells for faster lookup
+    let cell_size: f64 = 5.0; // degrees for spatial index (larger = fewer cells to check)
+    let mut spatial_index: std::collections::HashMap<(i32, i32), Vec<usize>> =
+        std::collections::HashMap::new();
+
+    for i in 0..num_midpoints {
+        let lat = midpoints[i * 2];
+        let lng = midpoints[i * 2 + 1];
+        let cell_lat = (lat / cell_size).floor() as i32;
+        let cell_lng = (lng / cell_size).floor() as i32;
+        spatial_index.entry((cell_lat, cell_lng))
+            .or_insert_with(Vec::new)
+            .push(i);
+    }
+
+    // Pre-allocate output
+    let mut field: Vec<f32> = vec![max_search_dist; lat_cells * lng_cells];
+
+    // First pass: mark cells containing midpoints as 0
+    for i in 0..num_midpoints {
+        let lat = midpoints[i * 2];
+        let lng = midpoints[i * 2 + 1];
+
+        if lat < lat_min || lat > lat_max {
+            continue;
+        }
+
+        let lat_idx = ((lat - lat_min) / resolution).floor() as usize;
+        let lng_normalized = ((lng + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+        let lng_idx = ((lng_normalized - lng_min) / resolution).floor() as usize;
+
+        if lat_idx < lat_cells && lng_idx < lng_cells {
+            let idx = lat_idx * lng_cells + lng_idx;
+            field[idx] = 0.0;
+        }
+    }
+
+    // Second pass: compute distances using expanding ring search
+    let km_per_cell = cell_size * 111.0; // Approximate km per spatial index cell
+
+    for lat_idx in 0..lat_cells {
+        let lat = lat_min + (lat_idx as f64 + 0.5) * resolution;
+        let cos_lat = (lat.abs() * PI / 180.0).cos().max(0.1);
+
+        for lng_idx in 0..lng_cells {
+            let idx = lat_idx * lng_cells + lng_idx;
+
+            // Skip cells that already have midpoints
+            if field[idx] == 0.0 {
+                continue;
+            }
+
+            let lng = lng_min + (lng_idx as f64 + 0.5) * resolution;
+
+            let center_cell_lat = (lat / cell_size).floor() as i32;
+            let center_cell_lng = (lng / cell_size).floor() as i32;
+
+            let mut min_dist: f64 = max_search_dist as f64;
+
+            // Expanding ring search - stop when ring's minimum possible distance > current best
+            let max_ring = ((max_search_dist as f64 / km_per_cell).ceil() as i32).min(15);
+
+            for ring in 0..=max_ring {
+                // Minimum possible distance for this ring (in km)
+                let ring_min_dist = if ring == 0 { 0.0 } else { (ring - 1) as f64 * km_per_cell * 0.7 };
+
+                // If we already have a closer point, stop searching
+                if ring_min_dist > min_dist {
+                    break;
+                }
+
+                // Adjust longitude search for latitude
+                let lng_ring = ((ring as f64 / cos_lat).ceil() as i32).min(36);
+
+                // Search cells in this ring
+                let lat_start = -ring;
+                let lat_end = ring;
+
+                for d_lat in lat_start..=lat_end {
+                    let on_lat_edge = d_lat == lat_start || d_lat == lat_end;
+
+                    let lng_start = if on_lat_edge { -lng_ring } else { -lng_ring };
+                    let lng_end = if on_lat_edge { lng_ring } else { lng_ring };
+
+                    for d_lng in lng_start..=lng_end {
+                        // For inner rows, only check edge cells
+                        if !on_lat_edge && d_lng != lng_start && d_lng != lng_end {
+                            continue;
+                        }
+
+                        // Handle antimeridian wrapping
+                        let max_lng_cells = (360.0 / cell_size).ceil() as i32;
+                        let mut cell_lng = center_cell_lng + d_lng;
+                        while cell_lng < -max_lng_cells / 2 {
+                            cell_lng += max_lng_cells;
+                        }
+                        while cell_lng >= max_lng_cells / 2 {
+                            cell_lng -= max_lng_cells;
+                        }
+
+                        let key = (center_cell_lat + d_lat, cell_lng);
+
+                        if let Some(mp_indices) = spatial_index.get(&key) {
+                            for &mp_idx in mp_indices {
+                                let mp_lat = midpoints[mp_idx * 2];
+                                let mp_lng = midpoints[mp_idx * 2 + 1];
+                                let dist = haversine_distance(lat, lng, mp_lat, mp_lng);
+                                if dist < min_dist {
+                                    min_dist = dist;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            field[idx] = (min_dist as f32).min(max_search_dist);
+        }
+    }
+
+    field
+}
+
+/// Get distance field dimensions for a given resolution
+#[wasm_bindgen]
+pub fn get_distance_field_dimensions(resolution: f64) -> Vec<usize> {
+    let lat_min: f64 = -85.0;
+    let lat_max: f64 = 85.0;
+    let lng_min: f64 = -180.0;
+    let lng_max: f64 = 180.0;
+
+    let lat_cells = ((lat_max - lat_min) / resolution).ceil() as usize;
+    let lng_cells = ((lng_max - lng_min) / resolution).ceil() as usize;
+
+    vec![lat_cells, lng_cells]
+}

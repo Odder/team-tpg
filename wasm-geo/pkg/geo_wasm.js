@@ -1,8 +1,26 @@
 let wasm;
 
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
 }
 
 let cachedFloat64ArrayMemory0 = null;
@@ -13,6 +31,14 @@ function getFloat64ArrayMemory0() {
     return cachedFloat64ArrayMemory0;
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 function passArrayF64ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 8, 8) >>> 0;
     getFloat64ArrayMemory0().set(arg, ptr / 8);
@@ -21,6 +47,26 @@ function passArrayF64ToWasm0(arg, malloc) {
 }
 
 let WASM_VECTOR_LEN = 0;
+
+/**
+ * Build a distance field grid for heatmap rendering
+ *
+ * Input: midpoints as flat array [lat0, lon0, lat1, lon1, ...]
+ * Output: Float32Array of distances for the entire grid (row-major order)
+ *
+ * Grid covers lat -85 to 85, lng -180 to 180 at given resolution
+ * @param {Float64Array} midpoints
+ * @param {number} resolution
+ * @returns {Float32Array}
+ */
+export function build_distance_field(midpoints, resolution) {
+    const ptr0 = passArrayF64ToWasm0(midpoints, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.build_distance_field(ptr0, len0, resolution);
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
 
 /**
  * Calculate all midpoints for heatmap generation
@@ -74,6 +120,18 @@ export function get_combination_count(num_a, num_b) {
     return ret >>> 0;
 }
 
+/**
+ * Get distance field dimensions for a given resolution
+ * @param {number} resolution
+ * @returns {Uint32Array}
+ */
+export function get_distance_field_dimensions(resolution) {
+    const ret = wasm.get_distance_field_dimensions(resolution);
+    var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v1;
+}
+
 const EXPECTED_RESPONSE_TYPES = new Set(['basic', 'cors', 'default']);
 
 async function __wbg_load(module, imports) {
@@ -125,7 +183,9 @@ function __wbg_get_imports() {
 function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     __wbg_init.__wbindgen_wasm_module = module;
+    cachedFloat32ArrayMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
 
 
     wasm.__wbindgen_start();

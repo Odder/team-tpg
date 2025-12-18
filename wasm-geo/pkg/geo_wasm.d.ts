@@ -2,6 +2,16 @@
 /* eslint-disable */
 
 /**
+ * Build a distance field grid for heatmap rendering
+ *
+ * Input: midpoints as flat array [lat0, lon0, lat1, lon1, ...]
+ * Output: Float32Array of distances for the entire grid (row-major order)
+ *
+ * Grid covers lat -85 to 85, lng -180 to 180 at given resolution
+ */
+export function build_distance_field(midpoints: Float64Array, resolution: number): Float32Array;
+
+/**
  * Calculate all midpoints for heatmap generation
  * Returns flat array: [lat0, lon0, lat1, lon1, ...]
  */
@@ -20,6 +30,11 @@ export function find_best_combinations(points_a: Float64Array, points_b: Float64
  */
 export function get_combination_count(num_a: number, num_b: number): number;
 
+/**
+ * Get distance field dimensions for a given resolution
+ */
+export function get_distance_field_dimensions(resolution: number): Uint32Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -27,6 +42,8 @@ export interface InitOutput {
   readonly find_best_combinations: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
   readonly calculate_all_midpoints: (a: number, b: number, c: number, d: number) => [number, number];
   readonly get_combination_count: (a: number, b: number) => number;
+  readonly build_distance_field: (a: number, b: number, c: number) => [number, number];
+  readonly get_distance_field_dimensions: (a: number) => [number, number];
   readonly __wbindgen_externrefs: WebAssembly.Table;
   readonly __wbindgen_malloc: (a: number, b: number) => number;
   readonly __wbindgen_free: (a: number, b: number, c: number) => void;
